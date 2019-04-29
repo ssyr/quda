@@ -133,6 +133,7 @@ namespace quda {
 
     if (pad != 0) errorQuda("Non-zero pad not supported");  
     if (precision == QUDA_HALF_PRECISION) errorQuda("Half precision not supported");
+    if (precision == QUDA_QUARTER_PRECISION) errorQuda("Quarter precision not supported");
 
     if (fieldOrder != QUDA_SPACE_COLOR_SPIN_FIELD_ORDER && 
 	fieldOrder != QUDA_SPACE_SPIN_COLOR_FIELD_ORDER &&
@@ -172,7 +173,7 @@ namespace quda {
 
       // need this hackery for the moment (need to locate the odd pointers half way into the full field)
       (dynamic_cast<cpuColorSpinorField*>(odd))->v = (void*)((char*)v + bytes/2);
-      if (precision == QUDA_HALF_PRECISION)
+      if (precision == QUDA_HALF_PRECISION || precision == QUDA_QUARTER_PRECISION)
 	(dynamic_cast<cpuColorSpinorField*>(odd))->norm = (void*)((char*)norm + norm_bytes/2);
 
       if (bytes != 2*even->Bytes() || bytes != 2*odd->Bytes())
@@ -224,7 +225,8 @@ namespace quda {
     backed_up = true;
   }
 
-  void cpuColorSpinorField::restore() {
+  void cpuColorSpinorField::restore() const
+  {
     if (!backed_up) errorQuda("Cannot restore since not backed up");
 
     memcpy(v, backup_h, bytes);
@@ -253,7 +255,7 @@ namespace quda {
   }
 
   // print out the vector at volume point x
-  void cpuColorSpinorField::PrintVector(unsigned int x) { genericPrintVector(*this, x); }
+  void cpuColorSpinorField::PrintVector(unsigned int x) const { genericPrintVector(*this, x); }
 
   void cpuColorSpinorField::allocateGhostBuffer(int nFace) const
   {

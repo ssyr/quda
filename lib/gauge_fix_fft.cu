@@ -246,29 +246,27 @@ namespace quda {
     double getTheta(){ return result_h[0].y; }
   };
 
-
-
   template<int blockSize, int Elems, typename Float, typename Gauge, int gauge_dir>
   __global__ void computeFix_quality(GaugeFixQualityArg<Float, Gauge> argQ){
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int idx_cb = threadIdx.x + blockIdx.x * blockDim.x;
     int parity = threadIdx.y;
 
     double2 data = make_double2(0.0,0.0);
-    if ( idx < argQ.threads ) {
+    while (idx_cb < argQ.threads) {
       typedef complex<Float> Cmplx;
 
       int x[4];
-      getCoords(x, idx, argQ.X, parity);
+      getCoords(x, idx_cb, argQ.X, parity);
       Matrix<Cmplx,3> delta;
       setZero(&delta);
       //idx = linkIndex(x,X);
       for ( int mu = 0; mu < gauge_dir; mu++ ) {
         Matrix<Cmplx,3> U;
-        argQ.dataOr.load((Float*)(U.data),idx, mu, parity);
+        argQ.dataOr.load((Float *)(U.data), idx_cb, mu, parity);
         delta -= U;
       }
       //18*gauge_dir
-      data.x = -delta(0,0).x - delta(1,1).x - delta(2,2).x;
+      data.x += -delta(0, 0).x - delta(1, 1).x - delta(2, 2).x;
       //2
       for ( int mu = 0; mu < gauge_dir; mu++ ) {
         Matrix<Cmplx,3> U;
@@ -280,7 +278,7 @@ namespace quda {
       //18
       //SAVE DELTA!!!!!
       SubTraceUnit(delta);
-      idx = getIndexFull(idx, argQ.X, parity);
+      int idx = getIndexFull(idx_cb, argQ.X, parity);
       //Saving Delta
       argQ.delta[idx] = delta(0,0);
       argQ.delta[idx + 2 * argQ.threads] = delta(0,1);
@@ -289,9 +287,11 @@ namespace quda {
       argQ.delta[idx + 8 * argQ.threads] = delta(1,2);
       argQ.delta[idx + 10 * argQ.threads] = delta(2,2);
       //12
-      data.y = getRealTraceUVdagger(delta, delta);
+      data.y += getRealTraceUVdagger(delta, delta);
       //35
       //T=36*gauge_dir+65
+
+      idx_cb += blockDim.x * gridDim.x;
     }
 
     reduce2d<blockSize,2>(argQ, data);
@@ -303,11 +303,11 @@ namespace quda {
   class GaugeFixQuality : TunableLocalParity {
     GaugeFixQualityArg<Float, Gauge> argQ;
     mutable char aux_string[128];     // used as a label in the autotuner
-    private:
 
-    unsigned int minThreads() const { return argQ.threads; }
+  private:
+    bool tuneGridDim() const { return true; }
 
-    public:
+  public:
     GaugeFixQuality(GaugeFixQualityArg<Float, Gauge> &argQ)
       : argQ(argQ) {
     }
@@ -317,7 +317,7 @@ namespace quda {
       TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
       argQ.result_h[0] = make_double2(0.0,0.0);
       LAUNCH_KERNEL_LOCAL_PARITY(computeFix_quality, tp, stream, argQ, Elems, Float, Gauge, gauge_dir);
-      cudaDeviceSynchronize();
+      qudaDeviceSynchronize();
       argQ.result_h[0].x  /= (double)(3 * gauge_dir * 2 * argQ.threads);
       argQ.result_h[0].y  /= (double)(3 * 2 * argQ.threads);
     }
@@ -1104,7 +1104,7 @@ namespace quda {
     CUFFT_SAFE_CALL(cufftDestroy(plan_zt));
     CUFFT_SAFE_CALL(cufftDestroy(plan_xy));
     checkCudaError();
-    cudaDeviceSynchronize();
+    qudaDeviceSynchronize();
     profileInternalGaugeFixFFT.TPSTOP(QUDA_PROFILE_COMPUTE);
 
     if (getVerbosity() > QUDA_SUMMARIZE){

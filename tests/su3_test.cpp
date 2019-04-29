@@ -33,11 +33,15 @@ extern QudaPrecision prec;
 extern QudaPrecision prec_sloppy;
 extern double anisotropy;
 
+extern bool verify_results;
+
 extern char latfile[];
+
+extern QudaVerbosity verbosity;
 
 #define MAX(a,b) ((a)>(b)?(a):(b))
 
-QudaPrecision &cpu_prec = prec;
+QudaPrecision cpu_prec = QUDA_DOUBLE_PRECISION;
 QudaPrecision &cuda_prec = prec;
 QudaPrecision &cuda_prec_sloppy = prec_sloppy;
 
@@ -101,8 +105,7 @@ void SU3test(int argc, char **argv) {
 
   setGaugeParam(gauge_param);
   setDims(gauge_param.X);
-  size_t gSize = (gauge_param.cpu_prec == QUDA_DOUBLE_PRECISION) ? 
-    sizeof(double) : sizeof(float);
+  size_t gSize = gauge_param.cpu_prec;
 
   void *gauge[4], *new_gauge[4];
 
@@ -113,6 +116,8 @@ void SU3test(int argc, char **argv) {
 
   initQuda(device);
 
+  setVerbosity(verbosity);
+
   // call srand() with a rank-dependent seed
   initRand();
 
@@ -122,19 +127,19 @@ void SU3test(int argc, char **argv) {
     construct_gauge_field(gauge, 2, gauge_param.cpu_prec, &gauge_param);
   } else { 
     // generate a random SU(3) field
-    printf("Randomizing fields...");
+    printfQuda("Randomizing fields...");
     construct_gauge_field(gauge, 1, gauge_param.cpu_prec, &gauge_param);
-    printf("done.\n");
+    printfQuda("done.\n");
   }
 
   loadGaugeQuda(gauge, &gauge_param);
   saveGaugeQuda(new_gauge, &gauge_param);
 
-#ifdef GPU_GAUGE_TOOLS
   double plaq[3];
   plaqQuda(plaq);
-  printf("Computed plaquette is %e (spatial = %e, temporal = %e)\n", plaq[0], plaq[1], plaq[2]);
+  printfQuda("Computed plaquette is %e (spatial = %e, temporal = %e)\n", plaq[0], plaq[1], plaq[2]);
 
+#ifdef GPU_GAUGE_TOOLS
   // Topological charge
   double qCharge;
   // start the timer
@@ -143,7 +148,7 @@ void SU3test(int argc, char **argv) {
   // stop the timer
   time0 += clock();
   time0 /= CLOCKS_PER_SEC;
-  printf("Computed topological charge is %.16e Done in %g secs\n", qCharge, time0);
+  printfQuda("Computed topological charge is %.16e Done in %g secs\n", qCharge, time0);
 
   // Stout smearing should be equivalent to APE smearing
   // on D dimensional lattices for rho = alpha/2*(D-1). 
@@ -151,8 +156,6 @@ void SU3test(int argc, char **argv) {
   unsigned int nSteps = 50;
   double coeff_APE = 0.6;
   double coeff_STOUT = coeff_APE/(2*(4-1));
-  QudaVerbosity verbosity = QUDA_VERBOSE;
-  setVerbosity(verbosity);
   
   //STOUT
   // start the timer
@@ -163,7 +166,7 @@ void SU3test(int argc, char **argv) {
   time0 /= CLOCKS_PER_SEC;
   printfQuda("Total time for STOUT = %g secs\n", time0);
   qCharge = qChargeCuda();
-  printf("Computed topological charge after is %.16e \n", qCharge);
+  printfQuda("Computed topological charge after is %.16e \n", qCharge);
 
   //APE
   // start the timer
@@ -188,13 +191,14 @@ void SU3test(int argc, char **argv) {
   time0 /= CLOCKS_PER_SEC;
   printfQuda("Total time for Over Improved STOUT = %g secs\n", time0);
   qCharge = qChargeCuda();
-  printf("Computed topological charge after is %.16e \n", qCharge);
+  printfQuda("Computed topological charge after is %.16e \n", qCharge);
 
 #else
-  printf("Skipping plaquette tests since gauge tools have not been compiled\n");
+  printfQuda("Skipping other gauge tests since gauge tools have not been compiled\n");
 #endif
-  
-  check_gauge(gauge, new_gauge, 1e-3, gauge_param.cpu_prec);
+
+  if (verify_results) check_gauge(gauge, new_gauge, 1e-3, gauge_param.cpu_prec);
+
   freeGaugeQuda();
   endQuda();
 

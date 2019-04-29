@@ -1,10 +1,3 @@
-/* C. Kallidonis: This implementation is originally by
- * Simone Bacchio. The modifications taken place support 
- * different alpha-parameters in each direction.
- * September 2017
- */
-
-#include <transfer.h>
 #include <quda_internal.h>
 #include <quda_matrix.h>
 #include <gauge_field.h>

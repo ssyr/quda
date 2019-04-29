@@ -12,6 +12,9 @@ namespace quda {
     if (precision == QUDA_HALF_PRECISION) {
       errorQuda("CPU fields do not support half precision");
     }
+    if (precision == QUDA_QUARTER_PRECISION) {
+      errorQuda("CPU fields do not support quarter precision");
+    }
     if (pad != 0) {
       errorQuda("CPU fields do not support non-zero padding");
     }
@@ -92,13 +95,12 @@ namespace quda {
     }
 
     // compute the fat link max now in case it is needed later (i.e., for half precision)
-    if (param.compute_fat_link_max) fat_link_max = maxGauge(*this);
+    if (param.compute_fat_link_max) fat_link_max = this->abs_max();
   }
 
 
   cpuGaugeField::~cpuGaugeField()
   {
-    
     int siteDim = 0;
     if (geometry == QUDA_SCALAR_GEOMETRY) siteDim = 1;
     else if (geometry == QUDA_VECTOR_GEOMETRY) siteDim = nDim;
@@ -244,6 +246,12 @@ namespace quda {
 
   }
 
+  void cpuGaugeField::exchangeExtendedGhost(const int *R, TimeProfile &profile, bool no_comms_fill) {
+    profile.TPSTART(QUDA_PROFILE_COMMS);
+    exchangeExtendedGhost(R, no_comms_fill);
+    profile.TPSTOP(QUDA_PROFILE_COMMS);
+  }
+
   // defined in cudaGaugeField
   void *create_gauge_buffer(size_t bytes, QudaGaugeFieldOrder order, QudaFieldGeometry geometry);
   void **create_ghost_buffer(size_t bytes[], QudaGaugeFieldOrder order, QudaFieldGeometry geometry);
@@ -257,7 +265,7 @@ namespace quda {
 
     if (link_type == QUDA_ASQTAD_FAT_LINKS) {
       fat_link_max = src.LinkMax();
-      if (precision == QUDA_HALF_PRECISION && fat_link_max == 0.0)
+      if ((precision == QUDA_HALF_PRECISION || precision == QUDA_QUARTER_PRECISION) && fat_link_max == 0.0)
         errorQuda("fat_link_max has not been computed");
     } else {
       fat_link_max = 1.0;
@@ -351,7 +359,8 @@ namespace quda {
     backed_up = true;
   }
 
-  void cpuGaugeField::restore() {
+  void cpuGaugeField::restore() const
+  {
     if (!backed_up) errorQuda("Cannot restore since not backed up");
 
     if (order == QUDA_QDP_GAUGE_ORDER) {

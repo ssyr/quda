@@ -13,17 +13,22 @@
 #else
 #define DISABLE_TROVE
 #endif
-#include <tune_quda.h>
+#ifndef __CUDACC_RTC__
 #include <assert.h>
+#endif
+#include <type_traits>
+
 #include <register_traits.h>
 #include <complex_quda.h>
 #include <quda_matrix.h>
 #include <index_helper.cuh>
 #include <fast_intdiv.h>
 #include <type_traits>
+#include <limits>
 #include <atomic.cuh>
 #include <thrust_helper.cuh>
 #include <gauge_field.h>
+#include <index_helper.cuh>
 
 namespace quda {
 
@@ -43,6 +48,7 @@ namespace quda {
       const int dim;
       const int x_cb;
       const int parity;
+      const Float phase;
       T &gauge;
 
       /**
@@ -52,8 +58,14 @@ namespace quda {
 	 @param[in] x_cb Checkerboarded space-time index we are accessing
 	 @param[in] parity Parity we are accessing
        */
-      __device__ __host__ inline gauge_wrapper<Float,T>(T &gauge, int dim, int x_cb, int parity)
-	: gauge(gauge), dim(dim), x_cb(x_cb), parity(parity) { }
+      __device__ __host__ inline gauge_wrapper<Float, T>(T &gauge, int dim, int x_cb, int parity, Float phase = 1.0) :
+          gauge(gauge),
+          dim(dim),
+          x_cb(x_cb),
+          parity(parity),
+          phase(phase)
+      {
+      }
 
       /**
 	 @brief Assignment operator with Matrix instance as input
@@ -72,7 +84,7 @@ namespace quda {
   template <typename T, int N>
     template <typename S>
     __device__ __host__ inline void Matrix<T,N>::operator=(const gauge_wrapper<typename RealType<T>::type,S> &a) {
-    a.gauge.load((typename RealType<T>::type*)data, a.x_cb, a.dim, a.parity);
+    a.gauge.load((typename RealType<T>::type *)data, a.x_cb, a.dim, a.parity, a.phase);
   }
 
   /**
@@ -82,7 +94,7 @@ namespace quda {
   template <typename T, int N>
     template <typename S>
     __device__ __host__ inline Matrix<T,N>::Matrix(const gauge_wrapper<typename RealType<T>::type,S> &a) {
-    a.gauge.load((typename RealType<T>::type*)data, a.x_cb, a.dim, a.parity);
+    a.gauge.load((typename RealType<T>::type *)data, a.x_cb, a.dim, a.parity, a.phase);
   }
 
   /**
@@ -101,6 +113,7 @@ namespace quda {
       const int dim;
       const int ghost_idx;
       const int parity;
+      const Float phase;
       T &gauge;
 
       /**
@@ -110,8 +123,15 @@ namespace quda {
 	 @param[in] ghost_idx Ghost index we are accessing
 	 @param[in] parity Parity we are accessing
        */
-      __device__ __host__ inline gauge_ghost_wrapper<Float,T>(T &gauge, int dim, int ghost_idx, int parity)
-	: gauge(gauge), dim(dim), ghost_idx(ghost_idx), parity(parity) { }
+      __device__ __host__ inline gauge_ghost_wrapper<Float, T>(
+          T &gauge, int dim, int ghost_idx, int parity, Float phase = 1.0) :
+          gauge(gauge),
+          dim(dim),
+          ghost_idx(ghost_idx),
+          parity(parity),
+          phase(phase)
+      {
+      }
 
       /**
 	 @brief Assignment operator with Matrix instance as input
@@ -130,7 +150,7 @@ namespace quda {
   template <typename T, int N>
     template <typename S>
     __device__ __host__ inline void Matrix<T,N>::operator=(const gauge_ghost_wrapper<typename RealType<T>::type,S> &a) {
-    a.gauge.loadGhost((typename RealType<T>::type*)data, a.ghost_idx, a.dim, a.parity);
+    a.gauge.loadGhost((typename RealType<T>::type *)data, a.ghost_idx, a.dim, a.parity, a.phase);
   }
 
   /**
@@ -140,7 +160,7 @@ namespace quda {
   template <typename T, int N>
     template <typename S>
     __device__ __host__ inline Matrix<T,N>::Matrix(const gauge_ghost_wrapper<typename RealType<T>::type,S> &a) {
-    a.gauge.loadGhost((typename RealType<T>::type*)data, a.ghost_idx, a.dim, a.parity);
+    a.gauge.loadGhost((typename RealType<T>::type *)data, a.ghost_idx, a.dim, a.parity, a.phase);
   }
 
   namespace gauge {
@@ -149,6 +169,13 @@ namespace quda {
       square_(ReduceType scale) { }
       __host__ __device__ inline ReduceType operator()(const quda::complex<Float> &x)
       { return static_cast<ReduceType>(norm(x)); }
+    };
+
+    template<typename ReduceType> struct square_<ReduceType,char> {
+      const ReduceType scale;
+      square_(const ReduceType scale) : scale(scale) { }
+      __host__ __device__ inline ReduceType operator()(const quda::complex<char> &x)
+      { return norm(scale * complex<ReduceType>(x.real(), x.imag())); }
     };
 
     template<typename ReduceType> struct square_<ReduceType,short> {
@@ -168,6 +195,13 @@ namespace quda {
     template<typename Float, typename storeFloat> struct abs_ {
       abs_(const Float scale) { }
       __host__ __device__ Float operator()(const quda::complex<storeFloat> &x) { return abs(x); }
+    };
+
+    template<typename Float> struct abs_<Float,char> {
+      Float scale;
+      abs_(const Float scale) : scale(scale) { }
+      __host__ __device__ Float operator()(const quda::complex<char> &x)
+      { return abs(scale * complex<Float>(x.real(), x.imag())); }
     };
 
     template<typename Float> struct abs_<Float,short> {
@@ -215,8 +249,29 @@ namespace quda {
         __device__ __host__ inline fieldorder_wrapper(complex<storeFloat> *v, int idx, Float scale, Float scale_inv)
 	  : v(v), idx(idx), scale(scale), scale_inv(scale_inv) {}
 
-	__device__ __host__ inline Float real() const { return scale_inv*static_cast<Float>(v[idx].real()); }
-	__device__ __host__ inline Float imag() const { return scale_inv*static_cast<Float>(v[idx].imag()); }
+	__device__ __host__ inline Float real() const {
+          if (!fixed) {
+            return v[idx].real();
+          } else {
+            return scale_inv*static_cast<Float>(v[idx].real());
+          }
+        }
+
+	__device__ __host__ inline Float imag() const {
+          if (!fixed) {
+            return v[idx].imag();
+          } else {
+            return scale_inv*static_cast<Float>(v[idx].imag());
+          }
+        }
+
+	/**
+	   @brief negation operator
+           @return negation of this complex number
+	*/
+	__device__ __host__ inline complex<Float> operator-() const {
+	  return fixed ? -scale_inv*static_cast<complex<Float> >(v[idx]) : -static_cast<complex<Float> >(v[idx]);
+	}
 
 	/**
 	   @brief Assignment operator with fieldorder_wrapper instance as input
@@ -317,13 +372,15 @@ namespace quda {
     template<typename Float, int nColor, typename storeFloat, bool use_tex>
       struct Accessor<Float,nColor,QUDA_QDP_GAUGE_ORDER,storeFloat,use_tex> {
       complex <storeFloat> *u[QUDA_MAX_GEOMETRY];
+      const int volumeCB;
+      const int geometry;
       const int cb_offset;
       Float scale;
       Float scale_inv;
       static constexpr bool fixed = fixed_point<Float,storeFloat>();
 
       Accessor(const GaugeField &U, void *gauge_=0, void **ghost_=0)
-	: cb_offset((U.Bytes()>>1) / (sizeof(complex<storeFloat>)*U.Geometry())),
+	: volumeCB(U.VolumeCB()), geometry(U.Geometry()), cb_offset((U.Bytes()>>1) / (sizeof(complex<storeFloat>)*U.Geometry())),
 	scale(static_cast<Float>(1.0)), scale_inv(static_cast<Float>(1.0))
       {
 	for (int d=0; d<U.Geometry(); d++)
@@ -333,7 +390,7 @@ namespace quda {
       }
 
     Accessor(const Accessor<Float,nColor,QUDA_QDP_GAUGE_ORDER,storeFloat,use_tex> &a)
-	: cb_offset(a.cb_offset), scale(a.scale), scale_inv(a.scale_inv) {
+      : volumeCB(a.volumeCB), geometry(a.geometry), cb_offset(a.cb_offset), scale(a.scale), scale_inv(a.scale_inv) {
 	for (int d=0; d<QUDA_MAX_GEOMETRY; d++)
 	  u[d] = a.u[d];
       }
@@ -360,18 +417,20 @@ namespace quda {
 	{ return fieldorder_wrapper<Float,storeFloat>(u[d], parity*cb_offset + (x*nColor + row)*nColor + col,
 						      scale, scale_inv); }
 
-      __device__ __host__ inline void atomic_add(int dim, int parity, int x_cb, int row, int col, const complex<Float> &val) const {
+      template<typename theirFloat>
+      __device__ __host__ inline void atomic_add(int dim, int parity, int x_cb, int row, int col,
+                                                 const complex<theirFloat> &val) const {
 #ifdef __CUDA_ARCH__
 	typedef typename vector<storeFloat,2>::type vec2;
 	vec2 *u2 = reinterpret_cast<vec2*>(u[dim] + parity*cb_offset + (x_cb*nColor + row)*nColor + col);
-	if (fixed) {
+	if (fixed && !match<storeFloat,theirFloat>()) {
 	  complex<storeFloat> val_(round(scale * val.real()), round(scale * val.imag()));
 	  atomicAdd(u2, (vec2&)val_);
 	} else {
 	  atomicAdd(u2, (vec2&)val);
 	}
 #else
-	if (fixed) {
+	if (fixed && !match<storeFloat,theirFloat>()) {
 	  complex<storeFloat> val_(round(scale * val.real()), round(scale * val.imag()));
 #pragma omp atomic update
 	  u[dim][ parity*cb_offset + (x_cb*nColor + row)*nColor + col].x += val_.x;
@@ -386,20 +445,26 @@ namespace quda {
 #endif
       }
 
-      __host__ double device_norm2(int dim=0) const {
-	errorQuda("Not implemented");
-	return 0.0;
+      template<typename helper, typename reducer>
+        __host__ double transform_reduce(QudaFieldLocation location, int dim, helper h, reducer r, double init) const {
+	if (dim >= geometry) errorQuda("Request dimension %d exceeds dimensionality of the field %d", dim, geometry);
+        int lower = (dim == -1) ? 0 : dim;
+        int upper = (dim == -1) ? geometry : dim+1;
+        double result = init;
+        if (location == QUDA_CUDA_FIELD_LOCATION) {
+          thrust_allocator alloc;
+          for (int d=lower; d<upper; d++) {
+            thrust::device_ptr<complex<storeFloat> > ptr(u[d]);
+            result = thrust::transform_reduce(thrust::cuda::par(alloc), ptr, ptr+2*volumeCB*nColor*nColor, h, result, r);
+          }
+        } else {
+          for (int d=lower; d<upper; d++) {
+            result = thrust::transform_reduce(thrust::seq, u[d], u[d]+2*volumeCB*nColor*nColor, h, result, r);
+          }
+        }
+        return result;
       }
 
-      __host__ double device_absmax(int dim=0) const {
-	errorQuda("Not implemented");
-	return 0.0;
-      }
-
-      __host__ double device_absmin(int dim=0) const {
-	errorQuda("Not implemented");
-	return 0.0;
-      }
     };
 
     template<typename Float, int nColor, bool native_ghost, typename storeFloat, bool use_tex>
@@ -498,18 +563,19 @@ namespace quda {
 	{ return fieldorder_wrapper<Float,storeFloat>
 	    (u, (((parity*volumeCB+x)*geometry + d)*nColor + row)*nColor + col, scale, scale_inv); }
 
-      __device__ __host__ inline void atomic_add(int dim, int parity, int x_cb, int row, int col, const complex<Float> &val) const {
+      template <typename theirFloat>
+      __device__ __host__ inline void atomic_add(int dim, int parity, int x_cb, int row, int col, const complex<theirFloat> &val) const {
 #ifdef __CUDA_ARCH__
 	typedef typename vector<storeFloat,2>::type vec2;
 	vec2 *u2 = reinterpret_cast<vec2*>(u + (((parity*volumeCB+x_cb)*geometry + dim)*nColor + row)*nColor + col);
-	if (fixed) {
+	if (fixed && !match<storeFloat,theirFloat>()) {
 	  complex<storeFloat> val_(round(scale * val.real()), round(scale * val.imag()));
 	  atomicAdd(u2, (vec2&)val_);
 	} else {
 	  atomicAdd(u2, (vec2&)val);
 	}
 #else
-	if (fixed) {
+	if (fixed && !match<storeFloat,theirFloat>()) {
 	  complex<storeFloat> val_(round(scale * val.real()), round(scale * val.imag()));
 #pragma omp atomic update
 	  u[(((parity*volumeCB+x_cb)*geometry + dim)*nColor + row)*nColor + col].x += val_.x;
@@ -524,24 +590,32 @@ namespace quda {
 #endif
       }
 
-      __host__ double device_norm2() const {
-	thrust_allocator alloc;
-	thrust::device_ptr<complex<storeFloat> > ptr(u);
-	return thrust::transform_reduce(thrust::cuda::par(alloc),
-					ptr+0*volumeCB*geometry*nColor*nColor,
-					ptr+2*volumeCB*geometry*nColor*nColor,
-					square_<double,storeFloat>(scale_inv), 0.0, thrust::plus<double>());
+      template<typename helper, typename reducer>
+      __host__ double transform_reduce(QudaFieldLocation location, int dim, helper h, reducer r, double init) const {
+	if (dim >= geometry) errorQuda("Request dimension %d exceeds dimensionality of the field %d", dim, geometry);
+        int lower = (dim == -1) ? 0 : dim;
+        int upper = (dim == -1) ? geometry : dim+1;
+        double result = init;
+        if (location == QUDA_CUDA_FIELD_LOCATION) {
+          thrust_allocator alloc;
+          thrust::device_ptr<complex<storeFloat> > ptr(u);
+          result = thrust::transform_reduce(thrust::cuda::par(alloc),
+                                            ptr+(0*geometry+lower)*volumeCB*nColor*nColor,
+                                            ptr+(0*geometry+upper)*volumeCB*nColor*nColor, h, result, r);
+          result = thrust::transform_reduce(thrust::cuda::par(alloc),
+                                            ptr+(1*geometry+lower)*volumeCB*nColor*nColor,
+                                            ptr+(1*geometry+upper)*volumeCB*nColor*nColor, h, result, r);
+        } else {
+          result = thrust::transform_reduce(thrust::seq,
+                                            u+(0*geometry+lower)*volumeCB*nColor*nColor,
+                                            u+(0*geometry+upper)*volumeCB*nColor*nColor, h, result, r);
+          result  = thrust::transform_reduce(thrust::seq,
+                                             u+(1*geometry+lower)*volumeCB*nColor*nColor,
+                                             u+(1*geometry+upper)*volumeCB*nColor*nColor, h, result, r);
+        }
+        return result;
       }
 
-      __host__ double device_absmax(int dim=0) const {
-	errorQuda("Not implemented");
-	return 0.0;
-      }
-
-      __host__ double device_absmin(int dim=0) const {
-	errorQuda("Not implemented");
-	return 0.0;
-      }
     };
 
     template<typename Float, int nColor, bool native_ghost, typename storeFloat, bool use_tex>
@@ -687,18 +761,19 @@ namespace quda {
 	return fieldorder_wrapper<Float,storeFloat>(u, index, scale, scale_inv);
       }
 
-      __device__ __host__ void atomic_add(int dim, int parity, int x_cb, int row, int col, const complex<Float> &val) const {
+      template <typename theirFloat>
+      __device__ __host__ void atomic_add(int dim, int parity, int x_cb, int row, int col, const complex<theirFloat> &val) const {
 #ifdef __CUDA_ARCH__
 	typedef typename vector<storeFloat,2>::type vec2;
 	vec2 *u2 = reinterpret_cast<vec2*>(u + parity*offset_cb + dim*stride*nColor*nColor + (row*nColor+col)*stride + x_cb);
-	if (fixed) {
+	if (fixed && !match<storeFloat,theirFloat>()) {
 	  complex<storeFloat> val_(round(scale * val.real()), round(scale * val.imag()));
 	  atomicAdd(u2, (vec2&)val_);
 	} else {
 	  atomicAdd(u2, (vec2&)val);
 	}
 #else
-	if (fixed) {
+        if (fixed && !match<storeFloat,theirFloat>()) {
 	  complex<storeFloat> val_(round(scale * val.real()), round(scale * val.imag()));
 #pragma omp atomic update
 	  u[parity*offset_cb + dim*stride*nColor*nColor + (row*nColor+col)*stride + x_cb].x += val_.x;
@@ -713,89 +788,30 @@ namespace quda {
 #endif
       }
 
-      __host__ double device_norm2() const {
-	thrust_allocator alloc;
-	thrust::device_ptr<complex<storeFloat> > ptr(u);
-	double even = thrust::transform_reduce(thrust::cuda::par(alloc),
-					       ptr+0*offset_cb, ptr+0*offset_cb+geometry*stride*nColor*nColor,
-					       square_<double,storeFloat>(scale_inv), 0.0, thrust::plus<double>());
-	double odd  = thrust::transform_reduce(thrust::cuda::par(alloc),
-					       ptr+1*offset_cb, ptr+1*offset_cb+geometry*stride*nColor*nColor,
-					       square_<double,storeFloat>(scale_inv), 0.0, thrust::plus<double>());
-	return even + odd;
-      }
-
-      __host__ double device_norm2(int dim) const {
+      template<typename helper, typename reducer>
+        __host__ double transform_reduce(QudaFieldLocation location, int dim, helper h, reducer r, double init) const {
 	if (dim >= geometry) errorQuda("Request dimension %d exceeds dimensionality of the field %d", dim, geometry);
-	thrust_allocator alloc;
-	thrust::device_ptr<complex<storeFloat> > ptr(u);
-	double even = thrust::transform_reduce(thrust::cuda::par(alloc),
-					       ptr+0*offset_cb+(dim+0)*stride*nColor*nColor,
-					       ptr+0*offset_cb+(dim+1)*stride*nColor*nColor,
-					       square_<double,storeFloat>(scale_inv), 0.0, thrust::plus<double>());
-	double odd  = thrust::transform_reduce(thrust::cuda::par(alloc),
-					       ptr+1*offset_cb+(dim+0)*stride*nColor*nColor,
-					       ptr+1*offset_cb+(dim+1)*stride*nColor*nColor,
-					       square_<double,storeFloat>(scale_inv), 0.0, thrust::plus<double>());
-	return even + odd;
-      }
-
-      __host__ Float device_absmax() const {
-	thrust_allocator alloc;
-	thrust::device_ptr<complex<storeFloat> > ptr(u);
-	Float even = thrust::transform_reduce(thrust::cuda::par(alloc),
-					      ptr+0*offset_cb+0*stride*nColor*nColor,
-					      ptr+0*offset_cb+geometry*stride*nColor*nColor,
-					      abs_<Float,storeFloat>(scale_inv), static_cast<Float>(0.0), thrust::maximum<Float>());
-	Float odd  = thrust::transform_reduce(thrust::cuda::par(alloc),
-					      ptr+1*offset_cb+0*stride*nColor*nColor,
-					      ptr+1*offset_cb+geometry*stride*nColor*nColor,
-					      abs_<Float,storeFloat>(scale_inv), static_cast<Float>(0.0), thrust::maximum<Float>());
-	return std::max(even,odd);
-      }
-
-      __host__ Float device_absmax(int dim) const {
-	if (dim >= geometry) errorQuda("Request dimension %d exceeds dimensionality of the field %d", dim, geometry);
-	thrust_allocator alloc;
-	thrust::device_ptr<complex<storeFloat> > ptr(u);
-	Float even = thrust::transform_reduce(thrust::cuda::par(alloc),
-					      ptr+0*offset_cb+(dim+0)*stride*nColor*nColor,
-					      ptr+0*offset_cb+(dim+1)*stride*nColor*nColor,
-					      abs_<Float,storeFloat>(scale_inv), static_cast<Float>(0.0), thrust::maximum<Float>());
-	Float odd  = thrust::transform_reduce(thrust::cuda::par(alloc),
-					      ptr+1*offset_cb+(dim+0)*stride*nColor*nColor,
-					      ptr+1*offset_cb+(dim+1)*stride*nColor*nColor,
-					      abs_<Float,storeFloat>(scale_inv), static_cast<Float>(0.0), thrust::maximum<Float>());
-	return std::max(even,odd);
-      }
-
-      __host__ Float device_absmin() const {
-	thrust_allocator alloc;
-	thrust::device_ptr<complex<storeFloat> > ptr(u);
-	Float even = thrust::transform_reduce(thrust::cuda::par(alloc),
-					      ptr+0*offset_cb+0*stride*nColor*nColor,
-					      ptr+0*offset_cb+geometry*stride*nColor*nColor,
-					      abs_<Float,storeFloat>(scale_inv), std::numeric_limits<Float>::max(), thrust::minimum<Float>());
-	Float odd  = thrust::transform_reduce(thrust::cuda::par(alloc),
-					      ptr+1*offset_cb+0*stride*nColor*nColor,
-					      ptr+1*offset_cb+geometry*stride*nColor*nColor,
-					      abs_<Float,storeFloat>(scale_inv), std::numeric_limits<Float>::max(), thrust::minimum<Float>());
-	return std::min(even,odd);
-      }
-
-      __host__ Float device_absmin(int dim) const {
-	if (dim >= geometry) errorQuda("Request dimension %d exceeds dimensionality of the field %d", dim, geometry);
-	thrust_allocator alloc;
-	thrust::device_ptr<complex<storeFloat> > ptr(u);
-	Float even = thrust::transform_reduce(thrust::cuda::par(alloc),
-					      ptr+0*offset_cb+(dim+0)*stride*nColor*nColor,
-					      ptr+0*offset_cb+(dim+1)*stride*nColor*nColor,
-					      abs_<Float,storeFloat>(scale_inv), std::numeric_limits<Float>::max(), thrust::minimum<Float>());
-	Float odd  = thrust::transform_reduce(thrust::cuda::par(alloc),
-					      ptr+1*offset_cb+(dim+0)*stride*nColor*nColor,
-					      ptr+1*offset_cb+(dim+1)*stride*nColor*nColor,
-					      abs_<Float,storeFloat>(scale_inv), std::numeric_limits<Float>::max(), thrust::minimum<Float>());
-	return std::min(even,odd);
+        int lower = (dim == -1) ? 0 : dim;
+        int upper = (dim == -1) ? geometry : dim+1;
+        double result = init;
+        if (location == QUDA_CUDA_FIELD_LOCATION) {
+          thrust_allocator alloc;
+          thrust::device_ptr<complex<storeFloat> > ptr(u);
+          result = thrust::transform_reduce(thrust::cuda::par(alloc),
+                                            ptr+0*offset_cb+lower*stride*nColor*nColor,
+                                            ptr+0*offset_cb+upper*stride*nColor*nColor, h, result, r);
+          result = thrust::transform_reduce(thrust::cuda::par(alloc),
+                                            ptr+1*offset_cb+lower*stride*nColor*nColor,
+                                            ptr+1*offset_cb+upper*stride*nColor*nColor, h, result, r);
+        } else {
+          result = thrust::transform_reduce(thrust::seq,
+                                            u+0*offset_cb+lower*stride*nColor*nColor,
+                                            u+0*offset_cb+upper*stride*nColor*nColor, h, result, r);
+          result = thrust::transform_reduce(thrust::seq,
+                                            u+1*offset_cb+lower*stride*nColor*nColor,
+                                            u+1*offset_cb+upper*stride*nColor*nColor, h, result, r);
+        }
+        return result;
       }
 
     };
@@ -885,7 +901,7 @@ namespace quda {
 	/** An internal reference to the actual field we are accessing */
 	const int volumeCB;
 	const int nDim;
-	const int geometry;
+	const int_fastdiv geometry;
 	const QudaFieldLocation location;
 	static constexpr int nColorCoarse = nColor / nSpinCoarse;
 
@@ -1023,8 +1039,9 @@ namespace quda {
 	  return Ghost(d, parity, x, s_row*nColorCoarse + c_row, s_col*nColorCoarse + c_col);
 	}
 
+        template <typename theirFloat>
 	__device__ __host__ inline void atomicAdd(int d, int parity, int x, int s_row, int s_col,
-						  int c_row, int c_col, const complex<Float> &val) {
+						  int c_row, int c_col, const complex<theirFloat> &val) {
 	  accessor.atomic_add(d, parity, x, s_row*nColorCoarse + c_row, s_col*nColorCoarse + c_col, val);
 	}
 
@@ -1050,150 +1067,49 @@ namespace quda {
 	__device__ __host__ inline int NcolorCoarse() const { return nColorCoarse; }
 
 	/**
-	 * @brief Returns the L2 norm squared of the field
-	 * @return L2 norm squared
+	 * @brief Returns the L1 norm of the field in a given dimension
+	 * @param[in] dim Which dimension we are taking the norm of (dim=-1 mean all dimensions)
+	 * @return L1 norm
 	 */
-	__host__ double norm2(bool global=true) const {
-	  double nrm2 = 0;
-	  if (location == QUDA_CUDA_FIELD_LOCATION) {
-	    // call device version - specialized for ordering
-	    nrm2 = accessor.device_norm2();
-	  } else {
-	    // do simple norm on host memory
-	    for (int parity=0; parity<2; parity++) {
-	      for (int d=0; d<geometry; d++) {
-		for (int x_cb=0; x_cb<volumeCB; x_cb++) {
-		  for (int row=0; row<nColor; row++) {
-		    for (int col=0; col<nColor; col++) {
-		      nrm2 += norm((*this)(d,parity,x_cb,row,col));
-		    }
-		  }
-		}
-	      }
-	    }
-	  }
-	  if (global) comm_allreduce(&nrm2);
-	  return nrm2;
+	__host__ double norm1(int dim=-1, bool global=true) const {
+	  double nrm1 = accessor.transform_reduce(location, dim, abs_<double,storeFloat>(accessor.scale_inv),
+                                                  thrust::plus<double>(), 0.0);
+	  if (global) comm_allreduce(&nrm1);
+	  return nrm1;
 	}
 
 	/**
 	 * @brief Returns the L2 norm squared of the field in a given dimension
-	 * @param[in] dim Which dimension we are taking the norm of
+	 * @param[in] dim Which dimension we are taking the norm of (dim=-1 mean all dimensions)
 	 * @return L2 norm squared
 	 */
-	__host__ double norm2(int dim, bool global=true) const {
-	  double nrm2 = 0;
-	  if (location == QUDA_CUDA_FIELD_LOCATION) {
-	    // call device version - specialized for ordering
-	    nrm2 = accessor.device_norm2(dim);
-	  } else {
-	    // do simple norm on host memory
-	    for (int parity=0; parity<2; parity++)
-	      for (int x_cb=0; x_cb<volumeCB; x_cb++) {
-		for (int row=0; row<nColor; row++)
-		  for (int col=0; col<nColor; col++)
-		    nrm2 += norm((*this)(dim,parity,x_cb,row,col));
-	      }
-	  }
+	__host__ double norm2(int dim=-1, bool global=true) const {
+	  double nrm2 = accessor.transform_reduce(location, dim, square_<double,storeFloat>(accessor.scale_inv),
+                                                  thrust::plus<double>(), 0.0);
 	  if (global) comm_allreduce(&nrm2);
 	  return nrm2;
 	}
 
 	/**
-	 * @brief Returns the Linfinity norm of the field
-	 * @param[in] dim Which dimension we are taking the Linfinity norm of
-	 * @return Linfinity norm
-	 */
-	__host__ double abs_max(bool global=true) const {
-	  double absmax = 0;
-	  if (location == QUDA_CUDA_FIELD_LOCATION) {
-	    // call device version - specialized for ordering
-	    absmax = accessor.device_absmax();
-	  } else {
-	    // do simple norm on host memory
-	    for (int parity=0; parity<2; parity++)
-	      for (int dim=0; dim<geometry; dim++) {
-		for (int x_cb=0; x_cb<volumeCB; x_cb++) {
-		  for (int row=0; row<nColor; row++)
-		    for (int col=0; col<nColor; col++)
-		      absmax = abs((*this)(dim,parity,x_cb,row,col)) > absmax
-		      ? abs((*this)(dim,parity,x_cb,row,col)) : absmax;
-		}
-	      }
-	  }
-	  if (global) comm_allreduce_max(&absmax);
-	  return absmax;
-	}
-
-	/**
 	 * @brief Returns the Linfinity norm of the field in a given dimension
-	 * @param[in] dim Which dimension we are taking the Linfinity norm of
+	 * @param[in] dim Which dimension we are taking the norm of (dim=-1 mean all dimensions)
 	 * @return Linfinity norm
 	 */
-	__host__ double abs_max(int dim, bool global=true) const {
-	  double absmax = 0;
-	  if (location == QUDA_CUDA_FIELD_LOCATION) {
-	    // call device version - specialized for ordering
-	    absmax = accessor.device_absmax(dim);
-	  } else {
-	    // do simple norm on host memory
-	    for (int parity=0; parity<2; parity++)
-	      for (int x_cb=0; x_cb<volumeCB; x_cb++) {
-		for (int row=0; row<nColor; row++)
-		  for (int col=0; col<nColor; col++)
-		    absmax = abs((*this)(dim,parity,x_cb,row,col)) > absmax
-		      ? abs((*this)(dim,parity,x_cb,row,col)) : absmax;
-	      }
-	  }
+	__host__ double abs_max(int dim=-1, bool global=true) const {
+	  double absmax = accessor.transform_reduce(location, dim, abs_<Float,storeFloat>(accessor.scale_inv),
+                                                    thrust::maximum<Float>(), 0.0);
 	  if (global) comm_allreduce_max(&absmax);
 	  return absmax;
 	}
 
 	/**
 	 * @brief Returns the minimum absolute value of the field
+	 * @param[in] dim Which dimension we are taking the norm of (dim=-1 mean all dimensions)
 	 * @return Minimum norm
 	 */
-	__host__ double abs_min(bool global=true) const {
-	  double absmin = std::numeric_limits<double>::max();
-	  if (location == QUDA_CUDA_FIELD_LOCATION) {
-	    // call device version - specialized for ordering
-	    absmin = accessor.device_absmin();
-	  } else {
-	    // do simple min reduction on host memory
-	    for (int parity=0; parity<2; parity++)
-	      for (int dim=0; dim<geometry; dim++) {
-		for (int x_cb=0; x_cb<volumeCB; x_cb++) {
-		  for (int row=0; row<nColor; row++)
-		    for (int col=0; col<nColor; col++)
-		      absmin = abs((*this)(dim,parity,x_cb,row,col)) < absmin
-			? abs((*this)(dim,parity,x_cb,row,col)) : absmin;
-		}
-	      }
-	  }
-	  if (global) comm_allreduce_min(&absmin);
-	  return absmin;
-	}
-
-	/**
-	 * @brief Returns the minimum absolute value of the field
-	 * @param[in] dim Which dimension we are taking the Linfinity norm of
-	 * @return Minimum norm
-	 */
-	__host__ double abs_min(int dim, bool global=true) const {
-	  double absmin = std::numeric_limits<double>::max();
-	  if (location == QUDA_CUDA_FIELD_LOCATION) {
-	    // call device version - specialized for ordering
-	    absmin = accessor.device_absmin();
-	  } else {
-	    // do simple min reduction on host memory
-	    for (int parity=0; parity<2; parity++)
-	      for (int x_cb=0; x_cb<volumeCB; x_cb++) {
-		for (int row=0; row<nColor; row++)
-		  for (int col=0; col<nColor; col++)
-		    absmin = abs((*this)(dim,parity,x_cb,row,col)) < absmin
-		      ? abs((*this)(dim,parity,x_cb,row,col)) : absmin;
-	      }
-	  }
+	__host__ double abs_min(int dim=-1, bool global=true) const {
+	  double absmin = accessor.transform_reduce(location, dim, abs_<Float,storeFloat>(accessor.scale_inv),
+                                                    thrust::minimum<Float>(), std::numeric_limits<double>::max());
 	  if (global) comm_allreduce_min(&absmin);
 	  return absmin;
 	}
@@ -1202,91 +1118,99 @@ namespace quda {
 	size_t Bytes() const { return static_cast<size_t>(volumeCB) * nColor * nColor * 2ll * sizeof(storeFloat); }
       };
 
-
-    /** Generic reconstruction is no reconstruction */
-    template <int N, typename Float>
+      /**
+         @brief Generic reconstruction helper with no reconstruction
+         @tparam N number of real numbers in each packed gauge matrix
+         @tparam Float Storage format (e.g., double, float, short)
+         @tparam ghostExchange_ optional template the ghostExchange type
+         to avoid the run-time overhead (dummy for trivial reconstruct
+         type)
+      */
+      template <int N, typename Float, QudaGhostExchange ghostExchange_, QudaStaggeredPhase = QUDA_STAGGERED_PHASE_NO>
       struct Reconstruct {
-      typedef typename mapper<Float>::type RegType;
-    Reconstruct () {}
-    Reconstruct(const GaugeField &u) { }
-    Reconstruct(const Reconstruct<N,Float> &recon) { }
+        typedef typename mapper<Float>::type RegType;
+        RegType scale;
+        RegType scale_inv;
+	Reconstruct () {}
+        Reconstruct(const GaugeField &u) : scale(u.LinkMax()), scale_inv(1.0 / scale) {}
+        Reconstruct(const Reconstruct<N, Float, ghostExchange_> &recon) : scale(recon.scale), scale_inv(recon.scale_inv)
+        {
+        }
 
-      __device__ __host__ inline void Pack(RegType out[N], const RegType in[N], int idx ) const {
+        __device__ __host__ inline void Pack(RegType out[N], const RegType in[N], int idx) const
+        {
+          if (isFixed<Float>::value) {
 #pragma unroll
-	for (int i=0; i<N; i++) out[i] = in[i];
-      }
-      template<typename I>
-      __device__ __host__ inline void Unpack(RegType out[N], const RegType in[N], int idx, int dir,
-					       const RegType phase, const I *X, const int *R) const {
+            for (int i = 0; i < N; i++) out[i] = scale_inv * in[i];
+          } else {
 #pragma unroll
-	for (int i=0; i<N; i++) out[i] = in[i];
-      }
-      __device__ __host__ inline RegType getPhase(const RegType in[N]) const { return 0; }
-    };
+            for (int i = 0; i < N; i++) out[i] = in[i];
+          }
+        }
 
-    /** No reconstruction but we scale the result. This is used for
-	half-precision non-unitary fields, e.g., staggered fat link */
-    template <typename Float>
-      struct Reconstruct<19,Float> {
-      typedef typename mapper<Float>::type RegType;
-      RegType scale;
-    Reconstruct () {}
-    Reconstruct(const GaugeField &u) : scale(u.LinkMax()) { }
-    Reconstruct(const Reconstruct<19,Float> &recon) : scale(recon.scale) { }
-
-      __device__ __host__ inline void Pack(RegType out[18], const RegType in[18], int idx) const {
+        template <typename I>
+        __device__ __host__ inline void Unpack(
+            RegType out[N], const RegType in[N], int idx, int dir, const RegType phase, const I *X, const int *R) const
+        {
+          if (isFixed<Float>::value) {
 #pragma unroll
-	for (int i=0; i<18; i++) out[i] = in[i] / scale;
-      }
-      template<typename I>
-      __device__ __host__ inline void Unpack(RegType out[18], const RegType in[18], int idx, int dir,
-					     const RegType phase, const I *X, const int *R) const {
+            for (int i = 0; i < N; i++) out[i] = scale * in[i];
+          } else {
 #pragma unroll
-	for (int i=0; i<18; i++) out[i] = scale * in[i];
-      }
-      __device__ __host__ inline RegType getPhase(const RegType in[18]) const { return 0; }
-    };
+            for (int i = 0; i < N; i++) out[i] = in[i];
+          }
+        }
+        __device__ __host__ inline RegType getPhase(const RegType in[N]) const { return 0; }
+      };
 
       /**
-	 timeBoundary variant for extended gauge field
-	 @param idx extended field linear index
-	 @param X the gauge field dimensions
-	 @param R the radii dimenions of the extended region
-	 @param tBoundary the boundary condition
-	 @param isFirstTimeSlice if we're on the first time slice of nodes
-	 @param isLastTimeSlide if we're on the last time slice of nodes
-	 @param ghostExchange if the field is extended or not (determines indexing type)
+         @brief timeBoundary Compute boundary condition correction
+         @tparam ghostExhange_ Optional template the ghostExchange type to avoid the run-time overhead
+         @param idx extended field linear index
+         @param X the gauge field dimensions
+         @param R the radii dimenions of the extended region
+         @param tBoundary the boundary condition
+         @param isFirstTimeSlice if we're on the first time slice of nodes
+         @param isLastTimeSlide if we're on the last time slice of nodes
+         @param ghostExchange if the field is extended or not (determines indexing type)
       */
-      template <typename Float, typename I>
-      __device__ __host__ inline Float timeBoundary(int idx, const I X[QUDA_MAX_DIM], const int R[QUDA_MAX_DIM],
-						    QudaTboundary tBoundary, bool isFirstTimeSlice, bool isLastTimeSlice,
-						    QudaGhostExchange ghostExchange=QUDA_GHOST_EXCHANGE_NO) {
-	if (ghostExchange != QUDA_GHOST_EXCHANGE_EXTENDED) {
-	  if ( idx >= X[3]*X[2]*X[1]*X[0]/2 ) { // halo region on the first time slice
-	    return isFirstTimeSlice ? static_cast<Float>(tBoundary) : static_cast<Float>(1.0);
-	  } else if ( idx >= (X[3]-1)*X[0]*X[1]*X[2]/2 ) { // last link on the last time slice
-	    return isLastTimeSlice ? static_cast<Float>(tBoundary) : static_cast<Float>(1.0);
-	  } else {
-	    return static_cast<Float>(1.0);
-	  }
-	} else {
-	  if ( idx >= (R[3]-1)*X[0]*X[1]*X[2]/2 && idx < R[3]*X[0]*X[1]*X[2]/2 ) {
-	    // the boundary condition is on the R[3]-1 time slice
-	    return isFirstTimeSlice ? static_cast<Float>(tBoundary) : static_cast<Float>(1.0);
-	  } else if ( idx >= (X[3]-R[3]-1)*X[0]*X[1]*X[2]/2 && idx < (X[3]-R[3])*X[0]*X[1]*X[2]/2 ) {
-	    // the boundary condition lies on the X[3]-R[3]-1 time slice
-	    return isLastTimeSlice ? static_cast<Float>(tBoundary) : static_cast<Float>(1.0);
-	  } else {
-	    return static_cast<Float>(1.0);
-	  }
-	}
+      template <QudaGhostExchange ghostExchange_, typename T, typename I>
+      __device__ __host__ inline T timeBoundary(int idx, const I X[QUDA_MAX_DIM], const int R[QUDA_MAX_DIM],
+          T tBoundary, T scale, int firstTimeSliceBound, int lastTimeSliceBound, bool isFirstTimeSlice,
+          bool isLastTimeSlice, QudaGhostExchange ghostExchange = QUDA_GHOST_EXCHANGE_NO)
+      {
+
+        // MWTODO: should this return tBoundary : scale or tBoundary*scale : scale
+
+        if (ghostExchange_ == QUDA_GHOST_EXCHANGE_PAD
+            || (ghostExchange_ == QUDA_GHOST_EXCHANGE_INVALID && ghostExchange != QUDA_GHOST_EXCHANGE_EXTENDED)) {
+          if (idx >= firstTimeSliceBound) { // halo region on the first time slice
+            return isFirstTimeSlice ? tBoundary : scale;
+          } else if (idx >= lastTimeSliceBound) { // last link on the last time slice
+            return isLastTimeSlice ? tBoundary : scale;
+          } else {
+            return scale;
+          }
+        } else if (ghostExchange_ == QUDA_GHOST_EXCHANGE_EXTENDED
+            || (ghostExchange_ == QUDA_GHOST_EXCHANGE_INVALID && ghostExchange == QUDA_GHOST_EXCHANGE_EXTENDED)) {
+          if (idx >= (R[3] - 1) * X[0] * X[1] * X[2] / 2 && idx < R[3] * X[0] * X[1] * X[2] / 2) {
+            // the boundary condition is on the R[3]-1 time slice
+            return isFirstTimeSlice ? tBoundary : scale;
+          } else if (idx >= (X[3] - R[3] - 1) * X[0] * X[1] * X[2] / 2 && idx < (X[3] - R[3]) * X[0] * X[1] * X[2] / 2) {
+            // the boundary condition lies on the X[3]-R[3]-1 time slice
+            return isLastTimeSlice ? tBoundary : scale;
+          } else {
+            return scale;
+          }
+        }
+        return scale;
       }
 
       // not actually used - here for reference
       template <typename Float, typename I>
       __device__ __host__ inline Float milcStaggeredPhase(int dim, const int x[], const I R[]) {
-	// could consider non-extended varient too?
-	Float sign = static_cast<Float>(1.0);
+        // could consider non-extended variant too?
+        Float sign = static_cast<Float>(1.0);
 	switch (dim) {
 	case 0: if ( ((x[3] - R[3]) & 1) != 0)                             sign = -static_cast<Float>(1.0); break;
 	case 1: if ( ((x[0] - R[0] + x[3] - R[3]) & 1) != 0)               sign = -static_cast<Float>(1.0); break;
@@ -1295,28 +1219,50 @@ namespace quda {
 	return sign;
       }
 
-      template <typename Float>
-      struct Reconstruct<12,Float> {
-	typedef typename mapper<Float>::type RegType;
-	typedef complex<RegType> Complex;
-	const RegType anisotropy;
-	const QudaTboundary tBoundary;
-	bool isFirstTimeSlice;
-	bool isLastTimeSlice;
-	QudaGhostExchange ghostExchange;
 
-      Reconstruct () {}
+      /**
+         @brief Gauge reconstruct 12 helper where we reconstruct the
+         third row from the cross product of the first two rows
+         @tparam Float Storage format (e.g., double, float, short)
+         @tparam ghostExchange_ optional template the ghostExchange
+         type to avoid the run-time overhead
+      */
+      template <typename Float, QudaGhostExchange ghostExchange_> struct Reconstruct<12, Float, ghostExchange_> {
+        typedef typename mapper<Float>::type RegType;
+        typedef complex<RegType> Complex;
+        const RegType anisotropy;
+        const RegType tBoundary;
+        const int firstTimeSliceBound;
+        const int lastTimeSliceBound;
+        const bool isFirstTimeSlice;
+        const bool isLastTimeSlice;
+        QudaGhostExchange ghostExchange;
 
-      Reconstruct(const GaugeField &u) : anisotropy(u.Anisotropy()), tBoundary(u.TBoundary()),
-	  isFirstTimeSlice(comm_coord(3) == 0 ? true : false),
-	  isLastTimeSlice(comm_coord(3) == comm_dim(3)-1 ? true : false),
-	  ghostExchange(u.GhostExchange()) { }
+	Reconstruct () {}
 
-      Reconstruct(const Reconstruct<12,Float> &recon) : anisotropy(recon.anisotropy),
-	  tBoundary(recon.tBoundary), isFirstTimeSlice(recon.isFirstTimeSlice),
-	  isLastTimeSlice(recon.isLastTimeSlice), ghostExchange(recon.ghostExchange) { }
+        Reconstruct(const GaugeField &u) :
+            anisotropy(u.Anisotropy()),
+            tBoundary(static_cast<RegType>(u.TBoundary())),
+            firstTimeSliceBound(u.VolumeCB()),
+            lastTimeSliceBound((u.X()[3] - 1) * u.X()[0] * u.X()[1] * u.X()[2] / 2),
+            isFirstTimeSlice(comm_coord(3) == 0 ? true : false),
+            isLastTimeSlice(comm_coord(3) == comm_dim(3) - 1 ? true : false),
+            ghostExchange(u.GhostExchange())
+        {
+        }
 
-	__device__ __host__ inline void Pack(RegType out[12], const RegType in[18], int idx) const {
+        Reconstruct(const Reconstruct<12, Float, ghostExchange_> &recon) :
+            anisotropy(recon.anisotropy),
+            tBoundary(recon.tBoundary),
+            firstTimeSliceBound(recon.firstTimeSliceBound),
+            lastTimeSliceBound(recon.lastTimeSliceBound),
+            isFirstTimeSlice(recon.isFirstTimeSlice),
+            isLastTimeSlice(recon.isLastTimeSlice),
+            ghostExchange(recon.ghostExchange)
+        {
+        }
+
+        __device__ __host__ inline void Pack(RegType out[12], const RegType in[18], int idx) const {
 #pragma unroll
 	  for (int i=0; i<12; i++) out[i] = in[i];
 	}
@@ -1324,33 +1270,58 @@ namespace quda {
 	template<typename I>
 	__device__ __host__ inline void Unpack(RegType out[18], const RegType in[12], int idx, int dir,
 					       const RegType phase, const I *X, const int *R) const {
-	  const Complex *In = reinterpret_cast<const Complex*>(in);
-	  Complex *Out = reinterpret_cast<Complex*>(out);
+          Complex Out[9];
+#pragma unroll
+          for (int i = 0; i < 6; i++) Out[i] = Complex(in[2 * i + 0], in[2 * i + 1]);
 
-	  const RegType u0 = dir < 3 ? anisotropy :
-	    timeBoundary<RegType>(idx, X, R, tBoundary,isFirstTimeSlice, isLastTimeSlice, ghostExchange);
+          const RegType u0 = dir < 3 ?
+              anisotropy :
+              timeBoundary<ghostExchange_>(idx, X, R, tBoundary, static_cast<RegType>(1.0), firstTimeSliceBound,
+                  lastTimeSliceBound, isFirstTimeSlice, isLastTimeSlice, ghostExchange);
+
+          // Out[6] = u0*conj(Out[1]*Out[5] - Out[2]*Out[4]);
+          Out[6] = cmul(Out[2], Out[4]);
+          Out[6] = cmac(Out[1], Out[5], -Out[6]);
+          Out[6] = u0 * conj(Out[6]);
+
+          // Out[7] = u0*conj(Out[2]*Out[3] - Out[0]*Out[5]);
+          Out[7] = cmul(Out[0], Out[5]);
+          Out[7] = cmac(Out[2], Out[3], -Out[7]);
+          Out[7] = u0 * conj(Out[7]);
+
+          // Out[8] = u0*conj(Out[0]*Out[4] - Out[1]*Out[3]);
+          Out[8] = cmul(Out[1], Out[3]);
+          Out[8] = cmac(Out[0], Out[4], -Out[8]);
+          Out[8] = u0 * conj(Out[8]);
 
 #pragma unroll
-	  for(int i=0; i<6; ++i) Out[i] = In[i];
+          for (int i = 0; i < 9; i++) {
+            out[2 * i + 0] = Out[i].real();
+            out[2 * i + 1] = Out[i].imag();
+          }
+        }
 
-	  Out[6] = u0*conj(Out[1]*Out[5] - Out[2]*Out[4]);
-	  Out[7] = u0*conj(Out[2]*Out[3] - Out[0]*Out[5]);
-	  Out[8] = u0*conj(Out[0]*Out[4] - Out[1]*Out[3]);
-	}
-
-	__device__ __host__ inline RegType getPhase(const RegType in[18]) { return 0; }
+        __device__ __host__ inline RegType getPhase(const RegType in[18]) { return 0; }
       };
 
-      // FIX ME - 11 is a misnomer to avoid confusion in template instantiation
-      template <typename Float>
-      struct Reconstruct<11,Float> {
-	typedef typename mapper<Float>::type RegType;
+      /**
+         @brief Gauge reconstruct helper for Momentum field with 10
+         packed elements (really 9 from the Lie algebra, with zero for
+         last element).  We label this as 11 to avoid collisions with
+         simple load/store of momentum field where we do not seek to
+         unpack/pack.
+         @tparam Float Storage format (e.g., double, float, short)
+         @tparam ghostExchange_ optional template the ghostExchange
+         type to avoid the run-time overhead
+      */
+      template <typename Float, QudaGhostExchange ghostExchange_> struct Reconstruct<11, Float, ghostExchange_> {
+        typedef typename mapper<Float>::type RegType;
 
 	Reconstruct () {}
 	Reconstruct(const GaugeField &u) { ; }
-	Reconstruct(const Reconstruct<11,Float> &recon) { }
+        Reconstruct(const Reconstruct<11, Float, ghostExchange_> &recon) {}
 
-	__device__ __host__ inline void Pack(RegType out[10], const RegType in[18], int idx) const {
+        __device__ __host__ inline void Pack(RegType out[10], const RegType in[18], int idx) const {
 #pragma unroll
 	  for (int i=0; i<4; i++) out[i] = in[i+2];
 	  out[4] = in[10];
@@ -1383,223 +1354,385 @@ namespace quda {
 	}
 
 	__device__ __host__ inline RegType getPhase(const RegType in[18]) { return 0; }
-
       };
 
-      template <typename Float>
-	struct Reconstruct<13,Float> {
-	typedef typename mapper<Float>::type RegType;
-	typedef complex<RegType> Complex;
-	const Reconstruct<12,Float> reconstruct_12;
-	const RegType scale;
 
-      Reconstruct () {}
-      Reconstruct(const GaugeField &u) : reconstruct_12(u), scale(u.Scale()) { }
-      Reconstruct(const Reconstruct<13,Float> &recon) : reconstruct_12(recon.reconstruct_12),
-	  scale(recon.scale) { }
+      /**
+         @brief Gauge reconstruct 13 helper where we reconstruct the
+         third row from the cross product of the first two rows, and
+         include a non-trivial phase factor
+         @tparam Float Storage format (e.g., double, float, short)
+         @tparam ghostExchange_ optional template the ghostExchange
+         type to avoid the run-time overhead
+      */
+      template <typename Float, QudaGhostExchange ghostExchange_, QudaStaggeredPhase stag_phase>
+      struct Reconstruct<13, Float, ghostExchange_, stag_phase> {
+        typedef typename mapper<Float>::type RegType;
+        typedef complex<RegType> Complex;
+        const Reconstruct<12, Float, ghostExchange_> reconstruct_12;
+        const RegType scale;
+        const RegType scale_inv;
 
-	__device__ __host__ inline void Pack(RegType out[12], const RegType in[18], int idx) const {
-	  reconstruct_12.Pack(out, in, idx);
-      }
+	Reconstruct () {}
+        Reconstruct(const GaugeField &u) : reconstruct_12(u), scale(u.Scale()), scale_inv(1.0 / scale) {}
+        Reconstruct(const Reconstruct<13, Float, ghostExchange_, stag_phase> &recon) :
+            reconstruct_12(recon.reconstruct_12),
+            scale(recon.scale),
+            scale_inv(recon.scale_inv)
+        {
+        }
 
-      template<typename I>
-      __device__ __host__ inline void Unpack(RegType out[18], const RegType in[12], int idx, int dir,
-					     const RegType phase, const I *X, const int *R) const {
-	const Complex *In = reinterpret_cast<const Complex*>(in);
-	Complex *Out = reinterpret_cast<Complex*>(out);
-	const RegType coeff = static_cast<RegType>(1.0)/scale;
+        __device__ __host__ inline void Pack(RegType out[12], const RegType in[18], int idx) const
+        {
+          reconstruct_12.Pack(out, in, idx);
+        }
+
+        template <typename I>
+        __device__ __host__ inline void Unpack(RegType out[18], const RegType in[12], int idx, int dir,
+            const RegType phase, const I *X, const int *R) const
+        {
+          Complex Out[9];
+#pragma unroll
+          for (int i = 0; i < 6; i++) Out[i] = Complex(in[2 * i + 0], in[2 * i + 1]);
+
+          Out[6] = cmul(Out[2], Out[4]);
+          Out[6] = cmac(Out[1], Out[5], -Out[6]);
+          Out[6] = scale_inv * conj(Out[6]);
+
+          Out[7] = cmul(Out[0], Out[5]);
+          Out[7] = cmac(Out[2], Out[3], -Out[7]);
+          Out[7] = scale_inv * conj(Out[7]);
+
+          Out[8] = cmul(Out[1], Out[3]);
+          Out[8] = cmac(Out[0], Out[4], -Out[8]);
+          Out[8] = scale_inv * conj(Out[8]);
+
+          if (stag_phase == QUDA_STAGGERED_PHASE_NO) { // dynamic phasing
+            // Multiply the third row by exp(I*3*phase), since the cross product will end up in a scale factor of exp(-I*2*phase)
+            RegType cos_sin[2];
+            Trig<isFixed<RegType>::value, RegType>::SinCos(static_cast<RegType>(3. * phase), &cos_sin[1], &cos_sin[0]);
+            Complex A(cos_sin[0], cos_sin[1]);
+            Out[6] = cmul(A, Out[6]);
+            Out[7] = cmul(A, Out[7]);
+            Out[8] = cmul(A, Out[8]);
+          } else { // phase is +/- 1 so real multiply is sufficient
+            Out[6] *= phase;
+            Out[7] *= phase;
+            Out[8] *= phase;
+          }
 
 #pragma unroll
-	for(int i=0; i<6; ++i) Out[i] = In[i];
+          for (int i = 0; i < 9; i++) {
+            out[2 * i + 0] = Out[i].real();
+            out[2 * i + 1] = Out[i].imag();
+          }
+        }
 
-	Out[6] = coeff*conj(Out[1]*Out[5] - Out[2]*Out[4]);
-	Out[7] = coeff*conj(Out[2]*Out[3] - Out[0]*Out[5]);
-	Out[8] = coeff*conj(Out[0]*Out[4] - Out[1]*Out[3]);
-
-	// Multiply the third row by exp(I*3*phase), since the cross product will end up in a scale factor of exp(-I*2*phase)
-	RegType cos_sin[2];
-	Trig<isHalf<RegType>::value,RegType>::SinCos(static_cast<RegType>(3.*phase), &cos_sin[1], &cos_sin[0]);
-	Complex A(cos_sin[0], cos_sin[1]);
-
-	Out[6] *= A;
-	Out[7] *= A;
-	Out[8] *= A;
-      }
-
-      __device__ __host__ inline RegType getPhase(const RegType in[18]) const {
+        __device__ __host__ inline RegType getPhase(const RegType in[18]) const
+        {
 #if 1 // phase from cross product
-	const Complex *In = reinterpret_cast<const Complex*>(in);
-	// denominator = (U[0][0]*U[1][1] - U[0][1]*U[1][0])*
-	Complex denom = conj(In[0]*In[4] - In[1]*In[3]) / scale;
-	Complex expI3Phase = In[8] / denom; // numerator = U[2][2]
-	RegType phase = arg(expI3Phase)/static_cast<RegType>(3.0);
-#else // phase from determinant
-	Matrix<Complex,3> a;
+          Complex In[9];
 #pragma unroll
-	for (int i=0; i<9; i++) a(i) = Complex(in[2*i]/scale, in[2*i+1]/scale);
-	const Complex det = getDeterminant( a );
-	RegType phase = arg(det)/3;
+          for (int i = 0; i < 9; i++) In[i] = Complex(in[2 * i + 0], in[2 * i + 1]);
+          // denominator = (U[0][0]*U[1][1] - U[0][1]*U[1][0])*
+          Complex denom = conj(In[0] * In[4] - In[1] * In[3]) * scale_inv;
+          Complex expI3Phase = In[8] / denom; // numerator = U[2][2]
+
+          if (stag_phase == QUDA_STAGGERED_PHASE_NO) { // dynamic phasing
+            return arg(expI3Phase) / static_cast<RegType>(3.0);
+          } else {
+            return expI3Phase.real() > 0 ? 1 : -1;
+          }
+#else // phase from determinant
+          Matrix<Complex, 3> a;
+#pragma unroll
+          for (int i = 0; i < 9; i++) a(i) = Complex(in[2 * i] * scale_inv, in[2 * i + 1] * scale_inv);
+          const Complex det = getDeterminant(a);
+          return phase = arg(det) / 3;
 #endif
-	return phase;
-      }
+        }
+      };
 
-    };
+      /**
+         @brief Gauge reconstruct 8 helper where we reconstruct the gauge
+         matrix from 8 packed elements (maximal compression)
+         @tparam Float Storage format (e.g., double, float, short)
+         @tparam ghostExchange_ optional template the ghostExchange type
+         to avoid the run-time overhead
+      */
+      template <typename Float, QudaGhostExchange ghostExchange_> struct Reconstruct<8, Float, ghostExchange_> {
+        typedef typename mapper<Float>::type RegType;
+        typedef complex<RegType> Complex;
+        const Complex anisotropy; // imaginary value stores inverse
+        const Complex tBoundary;  // imaginary value stores inverse
+        const int firstTimeSliceBound;
+        const int lastTimeSliceBound;
+        const bool isFirstTimeSlice;
+        const bool isLastTimeSlice;
+        QudaGhostExchange ghostExchange;
 
+	Reconstruct () {}
 
-    template <typename Float>
-    struct Reconstruct<8,Float> {
-    typedef typename mapper<Float>::type RegType;
-    typedef complex<RegType> Complex;
-    const RegType anisotropy;
-    const QudaTboundary tBoundary;
-    bool isFirstTimeSlice;
-    bool isLastTimeSlice;
-    QudaGhostExchange ghostExchange;
+        // scale factor is set when using recon-9
+        Reconstruct(const GaugeField &u, RegType scale = 1.0) :
+            anisotropy(u.Anisotropy() * scale, 1.0 / (u.Anisotropy() * scale)),
+            tBoundary(static_cast<RegType>(u.TBoundary()) * scale, 1.0 / (static_cast<RegType>(u.TBoundary()) * scale)),
+            firstTimeSliceBound(u.VolumeCB()),
+            lastTimeSliceBound((u.X()[3] - 1) * u.X()[0] * u.X()[1] * u.X()[2] / 2),
+            isFirstTimeSlice(comm_coord(3) == 0 ? true : false),
+            isLastTimeSlice(comm_coord(3) == comm_dim(3) - 1 ? true : false),
+            ghostExchange(u.GhostExchange())
+        {
+        }
 
-    Reconstruct () {}
+        Reconstruct(const Reconstruct<8, Float, ghostExchange_> &recon) :
+            anisotropy(recon.anisotropy),
+            tBoundary(recon.tBoundary),
+            firstTimeSliceBound(recon.firstTimeSliceBound),
+            lastTimeSliceBound(recon.lastTimeSliceBound),
+            isFirstTimeSlice(recon.isFirstTimeSlice),
+            isLastTimeSlice(recon.isLastTimeSlice),
+            ghostExchange(recon.ghostExchange)
+        {
+        }
 
-    Reconstruct(const GaugeField &u) : anisotropy(u.Anisotropy()), tBoundary(u.TBoundary()),
-      isFirstTimeSlice(comm_coord(3) == 0 ? true : false),
-      isLastTimeSlice(comm_coord(3) == comm_dim(3)-1 ? true : false),
-      ghostExchange(u.GhostExchange()) { }
-
-    Reconstruct(const Reconstruct<8,Float> &recon) : anisotropy(recon.anisotropy),
-      tBoundary(recon.tBoundary), isFirstTimeSlice(recon.isFirstTimeSlice),
-      isLastTimeSlice(recon.isLastTimeSlice), ghostExchange(recon.ghostExchange) { }
-
-    __device__ __host__ inline void Pack(RegType out[8], const RegType in[18], int idx) const {
-      out[0] = Trig<isHalf<Float>::value,RegType>::Atan2(in[1], in[0]);
-      out[1] = Trig<isHalf<Float>::value,RegType>::Atan2(in[13], in[12]);
+        __device__ __host__ inline void Pack(RegType out[8], const RegType in[18], int idx) const
+        {
+          out[0] = Trig<isFixed<Float>::value, RegType>::Atan2(in[1], in[0]);
+          out[1] = Trig<isFixed<Float>::value, RegType>::Atan2(in[13], in[12]);
 #pragma unroll
       for (int i=2; i<8; i++) out[i] = in[i];
     }
 
-    template<typename I>
+    template <typename I>
     __device__ __host__ inline void Unpack(RegType out[18], const RegType in[8], int idx, int dir, const RegType phase,
-					   const I *X, const int *R, const RegType scale=1.0) const {
-      const Complex *In = reinterpret_cast<const Complex*>(in);
-      Complex *Out = reinterpret_cast<Complex*>(out);
+        const I *X, const int *R, const Complex scale, const Complex u) const
+    {
 
-      // First reconstruct first row
-      Out[1] = In[1];
-      Out[2] = In[2];
-      RegType row_sum = norm(Out[1]) + norm(Out[2]);
+      RegType u0 = u.real();
+      RegType u0_inv = u.imag();
 
-      RegType u0 = dir < 3 ? anisotropy :
-	timeBoundary<RegType>(idx, X, R, tBoundary,isFirstTimeSlice, isLastTimeSlice, ghostExchange);
-      u0 *= scale;
+      Complex Out[9];
+#pragma unroll
+      for (int i = 1; i <= 3; i++) Out[i] = Complex(in[2 * i + 0], in[2 * i + 1]); // these elements are copied directly
 
-      RegType diff = static_cast<RegType>(1.0)/(u0*u0) - row_sum;
-      RegType U00_mag = sqrt(diff >= static_cast<RegType>(0.0) ? diff : static_cast<RegType>(0.0));
+      Trig<isFixed<Float>::value, RegType>::SinCos(in[0], &Out[0].y, &Out[0].x);
+      Trig<isFixed<Float>::value, RegType>::SinCos(in[1], &Out[6].y, &Out[6].x);
 
-      Out[0] = U00_mag * Complex(Trig<isHalf<Float>::value,RegType>::Cos(in[0]), Trig<isHalf<Float>::value,RegType>::Sin(in[0]));
+      // First, reconstruct first row
+      RegType row_sum = Out[1].real() * Out[1].real();
+      row_sum += Out[1].imag() * Out[1].imag();
+      row_sum += Out[2].real() * Out[2].real();
+      row_sum += Out[2].imag() * Out[2].imag();
+      RegType row_sum_inv = static_cast<RegType>(1.0) / row_sum;
 
-      // Now reconstruct first column
-      Out[3] = In[3];
-      RegType column_sum = norm(Out[0]) + norm(Out[3]);
+      RegType diff = u0_inv * u0_inv - row_sum;
+      RegType U00_mag = diff > 0.0 ? diff * rsqrt(diff) : static_cast<RegType>(0.0);
 
-      diff = static_cast<RegType>(1.0)/(u0*u0) - column_sum;
-      RegType U20_mag = sqrt(diff >= static_cast<RegType>(0.0) ? diff : static_cast<RegType>(0.0));
+      Out[0] *= U00_mag;
 
-      Out[6] = U20_mag * Complex( Trig<isHalf<Float>::value,RegType>::Cos(in[1]), Trig<isHalf<Float>::value,RegType>::Sin(in[1]));
-      // First column now restored
+      // Second, reconstruct first column
+      RegType column_sum = Out[0].real() * Out[0].real();
+      column_sum += Out[0].imag() * Out[0].imag();
+      column_sum += Out[3].real() * Out[3].real();
+      column_sum += Out[3].imag() * Out[3].imag();
 
-      // finally reconstruct last elements from SU(2) rotation
-      RegType r_inv2 = static_cast<RegType>(1.0)/(u0*row_sum);
+      diff = u0_inv * u0_inv - column_sum;
+      RegType U20_mag = diff > 0.0 ? diff * rsqrt(diff) : static_cast<RegType>(0.0);
 
-      Complex A = conj(Out[0])*Out[3];
-      Out[4] = -(conj(Out[6])*conj(Out[2]) + u0*A*Out[1])*r_inv2; // U11
-      Out[5] = (conj(Out[6])*conj(Out[1]) - u0*A*Out[2])*r_inv2;  // U12
+      Out[6] *= U20_mag;
 
-      A = conj(Out[0])*Out[6];
-      Out[7] = (conj(Out[3])*conj(Out[2]) - u0*A*Out[1])*r_inv2;  // U21
-      Out[8] = -(conj(Out[3])*conj(Out[1]) + u0*A*Out[2])*r_inv2; // U12
+      // Finally, reconstruct last elements from SU(2) rotation
+      RegType r_inv2 = u0_inv * row_sum_inv;
+      {
+        Complex A = cmul(conj(Out[0]), Out[3]);
+
+        // Out[4] = -(conj(Out[6])*conj(Out[2]) + u0*A*Out[1])*r_inv2; // U11
+        Out[4] = cmul(conj(Out[6]), conj(Out[2]));
+        Out[4] = cmac(u0 * A, Out[1], Out[4]);
+        Out[4] = -r_inv2 * Out[4];
+
+        // Out[5] = (conj(Out[6])*conj(Out[1]) - u0*A*Out[2])*r_inv2;  // U12
+        Out[5] = cmul(conj(Out[6]), conj(Out[1]));
+        Out[5] = cmac(-u0 * A, Out[2], Out[5]);
+        Out[5] = r_inv2 * Out[5];
+      }
+
+      {
+        Complex A = cmul(conj(Out[0]), Out[6]);
+
+        // Out[7] = (conj(Out[3])*conj(Out[2]) - u0*A*Out[1])*r_inv2;  // U21
+        Out[7] = cmul(conj(Out[3]), conj(Out[2]));
+        Out[7] = cmac(-u0 * A, Out[1], Out[7]);
+        Out[7] = r_inv2 * Out[7];
+
+        // Out[8] = -(conj(Out[3])*conj(Out[1]) + u0*A*Out[2])*r_inv2; // U12
+        Out[8] = cmul(conj(Out[3]), conj(Out[1]));
+        Out[8] = cmac(u0 * A, Out[2], Out[8]);
+        Out[8] = -r_inv2 * Out[8];
+      }
+
+#pragma unroll
+      for (int i = 0; i < 9; i++) {
+        out[2 * i + 0] = Out[i].real();
+        out[2 * i + 1] = Out[i].imag();
+      }
+    }
+
+    template <typename I>
+    __device__ __host__ inline void Unpack(RegType out[18], const RegType in[8], int idx, int dir, const RegType phase,
+        const I *X, const int *R, const Complex scale = Complex(static_cast<RegType>(1.0), static_cast<RegType>(1.0))) const
+    {
+      Complex u = dir < 3 ? anisotropy :
+                            timeBoundary<ghostExchange_>(idx, X, R, tBoundary, scale, firstTimeSliceBound,
+                                lastTimeSliceBound, isFirstTimeSlice, isLastTimeSlice, ghostExchange);
+      Unpack(out, in, idx, dir, phase, X, R, scale, u);
     }
 
     __device__ __host__ inline RegType getPhase(const RegType in[18]){ return 0; }
-  };
+      };
 
+      /**
+         @brief Gauge reconstruct 9 helper where we reconstruct the gauge
+         matrix from 8 packed elements (maximal compression) and include a
+         non-trivial phase factor
+         @tparam Float Storage format (e.g., double, float, short)
+         @tparam ghostExchange_ optional template the ghostExchange type
+         to avoid the run-time overhead
+      */
+      template <typename Float, QudaGhostExchange ghostExchange_, QudaStaggeredPhase stag_phase>
+      struct Reconstruct<9, Float, ghostExchange_, stag_phase> {
+        typedef typename mapper<Float>::type RegType;
+        typedef complex<RegType> Complex;
+        const Reconstruct<8, Float, ghostExchange_> reconstruct_8;
+        const RegType scale;
+        const RegType scale_inv;
 
-    template <typename Float>
-      struct Reconstruct<9,Float> {
-      typedef typename mapper<Float>::type RegType;
-      typedef complex<RegType> Complex;
-      const Reconstruct<8,Float> reconstruct_8;
-      const RegType scale;
+	Reconstruct () {}
 
-    Reconstruct () {}
+        Reconstruct(const GaugeField &u) : reconstruct_8(u), scale(u.Scale()), scale_inv(1.0 / scale) {}
 
-    Reconstruct(const GaugeField &u) : reconstruct_8(u), scale(u.Scale()) {}
+        Reconstruct(const Reconstruct<9, Float, ghostExchange_, stag_phase> &recon) :
+            reconstruct_8(recon.reconstruct_8),
+            scale(recon.scale),
+            scale_inv(recon.scale_inv)
+        {
+        }
 
-    Reconstruct(const Reconstruct<9,Float> &recon) : reconstruct_8(recon.reconstruct_8),
-	scale(recon.scale) { }
-
-      __device__ __host__ inline RegType getPhase(const RegType in[18]) const {
+        __device__ __host__ inline RegType getPhase(const RegType in[18]) const
+        {
 #if 1 // phase from cross product
-	const Complex *In = reinterpret_cast<const Complex*>(in);
-	// denominator = (U[0][0]*U[1][1] - U[0][1]*U[1][0])*
-	Complex denom = conj(In[0]*In[4] - In[1]*In[3]) / scale;
-	Complex expI3Phase = In[8] / denom; // numerator = U[2][2]
-	RegType phase = arg(expI3Phase)/static_cast<RegType>(3.0);
+          Complex In[9];
+#pragma unroll
+          for (int i = 0; i < 9; i++) In[i] = Complex(in[2 * i + 0], in[2 * i + 1]);
+          // denominator = (U[0][0]*U[1][1] - U[0][1]*U[1][0])*
+          Complex denom = conj(In[0] * In[4] - In[1] * In[3]) * scale_inv;
+          Complex expI3Phase = In[8] / denom; // numerator = U[2][2]
+          if (stag_phase == QUDA_STAGGERED_PHASE_NO) {
+            return arg(expI3Phase) / static_cast<RegType>(3.0);
+          } else {
+            return expI3Phase.real() > 0 ? 1 : -1;
+          }
 #else // phase from determinant
 	Matrix<Complex,3> a;
 #pragma unroll
-	for (int i=0; i<9; i++) a(i) = Complex(in[2*i]/scale, in[2*i+1]/scale);
-	const Complex det = getDeterminant( a );
+        for (int i = 0; i < 9; i++) a(i) = Complex(in[2 * i], in[2 * i + 1]) * scale_inv;
+        const Complex det = getDeterminant( a );
 	RegType phase = arg(det)/3;
-#endif
 	return phase;
-      }
+#endif
+        }
 
-	// Rescale the U3 input matrix by exp(-I*phase) to obtain an SU3 matrix multiplied by a real scale factor,
-      __device__ __host__ inline void Pack(RegType out[8], const RegType in[18], int idx) const {
-	RegType phase = getPhase(in);
-	RegType cos_sin[2];
-	Trig<isHalf<RegType>::value,RegType>::SinCos(static_cast<RegType>(-phase), &cos_sin[1], &cos_sin[0]);
-	Complex z(cos_sin[0], cos_sin[1]);
-	Complex su3[9];
+        // Rescale the U3 input matrix by exp(-I*phase) to obtain an SU3 matrix multiplied by a real scale factor,
+        __device__ __host__ inline void Pack(RegType out[8], const RegType in[18], int idx) const
+        {
+          RegType phase = getPhase(in);
+          RegType su3[18];
+
+          if (stag_phase == QUDA_STAGGERED_PHASE_NO) {
+            RegType cos_sin[2];
+            Trig<isFixed<RegType>::value, RegType>::SinCos(static_cast<RegType>(-phase), &cos_sin[1], &cos_sin[0]);
+            Complex z(cos_sin[0], cos_sin[1]);
+            z *= scale_inv;
 #pragma unroll
-	for (int i=0; i<9; i++) su3[i] = z * reinterpret_cast<const Complex*>(in)[i];
-	reconstruct_8.Pack(out, reinterpret_cast<RegType*>(su3), idx);
-      }
-
-      template<typename I>
-      __device__ __host__ inline void Unpack(RegType out[18], const RegType in[8], int idx, int dir,
-					     const RegType phase, const I *X, const int *R) const {
-	reconstruct_8.Unpack(out, in, idx, dir, phase, X, R, scale);
-	RegType cos_sin[2];
-	Trig<isHalf<RegType>::value,RegType>::SinCos(static_cast<RegType>(phase), &cos_sin[1], &cos_sin[0]);
-	Complex z(cos_sin[0], cos_sin[1]);
+            for (int i = 0; i < 9; i++) {
+              Complex su3_ = cmul(z, Complex(in[2 * i + 0], in[2 * i + 1]));
+              su3[2 * i + 0] = su3_.real();
+              su3[2 * i + 1] = su3_.imag();
+            }
+          } else {
 #pragma unroll
-	for (int i=0; i<9; i++) reinterpret_cast<Complex*>(out)[i] *= z;
+            for (int i = 0; i < 18; i++) { su3[i] = phase * in[i]; }
+          }
+          reconstruct_8.Pack(out, su3, idx);
+        }
+
+        template <typename I>
+        __device__ __host__ inline void Unpack(
+            RegType out[18], const RegType in[8], int idx, int dir, const RegType phase, const I *X, const int *R) const
+        {
+          reconstruct_8.Unpack(out, in, idx, dir, phase, X, R,
+              Complex(static_cast<RegType>(1.0), static_cast<RegType>(1.0)),
+              Complex(static_cast<RegType>(1.0), static_cast<RegType>(1.0)));
+
+          if (stag_phase == QUDA_STAGGERED_PHASE_NO) { // dynamic phase
+            RegType cos_sin[2];
+            Trig<isFixed<RegType>::value, RegType>::SinCos(static_cast<RegType>(phase), &cos_sin[1], &cos_sin[0]);
+            Complex z(cos_sin[0], cos_sin[1]);
+            z *= scale;
+#pragma unroll
+            for (int i = 0; i < 9; i++) {
+              Complex Out = cmul(z, Complex(out[2 * i + 0], out[2 * i + 1]));
+              out[2 * i + 0] = Out.real();
+              out[2 * i + 1] = Out.imag();
+            };
+          } else { // stagic phase
+#pragma unroll
+            for (int i = 0; i < 18; i++) { out[i] *= phase; }
+          }
+        }
+      };
+
+      __host__ __device__ inline constexpr int ct_sqrt(int n, int i = 1)
+      {
+        return n == i ? n : (i * i < n ? ct_sqrt(n, i + 1) : i);
       }
 
-    };
+      /**
+         @brief Return the number of colors of the accessor based on the length of the field
+         @param[in] length Number of real numbers per link
+         @return Number of colors (=sqrt(length/2))
+       */
+      __host__ __device__ inline constexpr int Ncolor(int length) { return ct_sqrt(length / 2); }
 
-  __host__ __device__ inline constexpr int ct_sqrt(int n, int i = 1){
-    return n == i ? n : (i * i < n ? ct_sqrt(n, i + 1) : i);
-  }
+      // we default to huge allocations for gauge field (for now)
+      constexpr bool default_huge_alloc = true;
 
-  /**
-     @brief Return the number of colors of the accessor based on the length of the field
-     @param[in] length Number of real numbers per link
-     @return Number of colors (=sqrt(length/2))
-   */
-  __host__ __device__ inline constexpr int Ncolor(int length) { return ct_sqrt(length/2); }
+      template <QudaStaggeredPhase phase> __host__ __device__ inline bool static_phase()
+      {
+        switch (phase) {
+        case QUDA_STAGGERED_PHASE_MILC:
+        case QUDA_STAGGERED_PHASE_CPS:
+        case QUDA_STAGGERED_PHASE_TIFR: return true;
+        default: return false;
+        }
+      }
 
-  // we default to huge allocations for gauge field (for now)
-  constexpr bool default_huge_alloc = true;
+      template <typename Float, int length, int N, int reconLenParam,
+          QudaStaggeredPhase stag_phase = QUDA_STAGGERED_PHASE_NO, bool huge_alloc = default_huge_alloc,
+          QudaGhostExchange ghostExchange_ = QUDA_GHOST_EXCHANGE_INVALID, bool use_inphase = false>
+      struct FloatNOrder {
+        using Accessor
+            = FloatNOrder<Float, length, N, reconLenParam, stag_phase, huge_alloc, ghostExchange_, use_inphase>;
 
-  template <typename Float, int length, int N, int reconLenParam, QudaStaggeredPhase stag_phase=QUDA_STAGGERED_PHASE_NO, bool huge_alloc=default_huge_alloc>
-    struct FloatNOrder {
-      typedef typename mapper<Float>::type RegType;
-      typedef typename VectorType<Float,N>::type Vector;
-      typedef typename AllocType<huge_alloc>::type AllocInt;
-      Reconstruct<reconLenParam,Float> reconstruct;
-      static const int reconLen = (reconLenParam == 11) ? 10 : reconLenParam;
-      static const int hasPhase = (reconLen == 9 || reconLen == 13) ? 1 : 0;
-      Float *gauge;
-      AllocInt offset;
+        typedef typename mapper<Float>::type RegType;
+        typedef typename VectorType<Float, N>::type Vector;
+        typedef typename AllocType<huge_alloc>::type AllocInt;
+        Reconstruct<reconLenParam, Float, ghostExchange_, stag_phase> reconstruct;
+        static const int reconLen = (reconLenParam == 11) ? 10 : reconLenParam;
+        static const int hasPhase = (reconLen == 9 || reconLen == 13) ? 1 : 0;
+        Float *gauge;
+	AllocInt offset;
 #ifdef USE_TEXTURE_OBJECTS
       typedef typename TexVectorType<RegType,N>::type TexVector;
       cudaTextureObject_t tex;
@@ -1638,14 +1771,14 @@ namespace quda {
 	if (geometry == QUDA_COARSE_GEOMETRY)
 	  errorQuda("This accessor does not support coarse-link fields (lacks support for bidirectional ghost zone");
 
-	static_assert( !(stag_phase!=QUDA_STAGGERED_PHASE_NO && reconLenParam != 18 && reconLenParam != 12),
-		       "staggered phase only presently supported for 18 and 12 reconstruct");
-	for (int i=0; i<4; i++) {
-	  X[i] = u.X()[i];
-	  R[i] = u.R()[i];
+        // static_assert( !(stag_phase!=QUDA_STAGGERED_PHASE_NO && reconLenParam != 18 && reconLenParam != 12),
+        // 	       "staggered phase only presently supported for 18 and 12 reconstruct");
+        for (int i = 0; i < 4; i++) {
+          X[i] = u.X()[i];
+          R[i] = u.R()[i];
 	  ghost[i] = ghost_ ? ghost_[i] : 0;
 	  faceVolumeCB[i] = u.SurfaceCB(i)*u.Nface(); // face volume equals surface * depth
-	}
+        }
 #ifdef USE_TEXTURE_OBJECTS
 	if (u.Location() == QUDA_CUDA_FIELD_LOCATION) tex = static_cast<const cudaGaugeField&>(u).Tex();
 	if (!huge_alloc && this->gauge != u.Gauge_p() && !override) {
@@ -1688,9 +1821,9 @@ namespace quda {
         if (geometry == QUDA_COARSE_GEOMETRY)
           errorQuda("This accessor does not support coarse-link fields (lacks support for bidirectional ghost zone");
 
-        static_assert( !(stag_phase!=QUDA_STAGGERED_PHASE_NO && reconLenParam != 18 && reconLenParam != 12),
-                       "staggered phase only presently supported for 18 and 12 reconstruct");
-        for (int i=0; i<4; i++) {
+        // static_assert( !(stag_phase!=QUDA_STAGGERED_PHASE_NO && reconLenParam != 18 && reconLenParam != 12),
+        //             "staggered phase only presently supported for 18 and 12 reconstruct");
+        for (int i = 0; i < 4; i++) {
           X[i] = u.X()[i];
           R[i] = u.R()[i];
           ghost[i] = ghost_ ? ghost_[i] : 0;
@@ -1710,43 +1843,43 @@ namespace quda {
 
       virtual ~FloatNOrder() { ; }
 
-      __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity) const {
+      __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity, Float inphase = 1.0) const
+      {
         const int M = reconLen / N;
         RegType tmp[reconLen];
 
 #pragma unroll
         for (int i=0; i<M; i++){
-	  // first do vectorized copy from memory
+          // first do texture load from memory
 #if defined(USE_TEXTURE_OBJECTS) && defined(__CUDA_ARCH__)
 	  if (!huge_alloc) { // use textures unless we have a huge alloc
-	    TexVector vecTmp = tex1Dfetch<TexVector>(tex, parity*tex_offset + dir*stride*M + stride*i + x);
+            TexVector vecTmp = tex1Dfetch<TexVector>(tex, parity * tex_offset + (dir * M + i) * stride + x);
+            // now insert into output array
 #pragma unroll
 	    for (int j=0; j<N; j++) copy(tmp[i*N+j], reinterpret_cast<RegType*>(&vecTmp)[j]);
 	  } else
 #endif
 	  {
-	    Vector vecTmp = vector_load<Vector>(gauge + parity*offset, dir*stride*M + stride*i + x);
-	    // second do copy converting into register type
+            // first load from memory
+            Vector vecTmp = vector_load<Vector>(gauge + parity * offset, (dir * M + i) * stride + x);
+            // second do copy converting into register type
 #pragma unroll
 	    for (int j=0; j<N; j++) copy(tmp[i*N+j], reinterpret_cast<Float*>(&vecTmp)[j]);
 	  }
 	}
 
         RegType phase = 0.; // TODO - add texture support for phases
-	if (hasPhase) copy(phase, (gauge+parity*offset)[phaseOffset/sizeof(Float) + stride*dir + x]);
 
-        // The phases come after the ghost matrices
-        reconstruct.Unpack(v, tmp, x, dir, 2.*M_PI*phase, X, R);
+        if (hasPhase) {
+          if (static_phase<stag_phase>() && (reconLen == 13 || use_inphase)) {
+            phase = inphase;
+          } else {
+            copy(phase, (gauge + parity * offset)[phaseOffset / sizeof(Float) + stride * dir + x]);
+            phase *= static_cast<RegType>(2.0) * static_cast<RegType>(M_PI);
+          }
+        }
 
-	// FIXME - this is a hack from hell - needs to be moved into the reconstruct type
-	if (stag_phase == QUDA_STAGGERED_PHASE_MILC && reconLenParam == 12) {
-	  Float sign = (dir == 0 && ((coords[3] - R[3]) & 1) != 0) ||
-	    ( dir == 1 && ((coords[0] - R[0] + coords[3] - R[3]) & 1) != 0) ||
-	    ( dir == 2 && ((coords[0] - R[0] + coords[1] - R[1] + coords[3] - R[3]) & 1) != 0) ? -1.0 : 1.0;
-
-#pragma unroll
-	  for (int i=12; i<18; i++) v[i] *= sign;
-	}
+        reconstruct.Unpack(v, tmp, x, dir, phase, X, R);
       }
 
       __device__ __host__ inline void save(const RegType v[length], int x, int dir, int parity) {
@@ -1762,7 +1895,7 @@ namespace quda {
 #pragma unroll
 	  for (int j=0; j<N; j++) copy(reinterpret_cast<Float*>(&vecTmp)[j], tmp[i*N+j]);
 	  // second do vectorized copy into memory
-	  vector_store(gauge + parity*offset, x + dir*stride*M + stride*i, vecTmp);
+          vector_store(gauge + parity * offset, x + (dir * M + i) * stride, vecTmp);
         }
         if(hasPhase){
           RegType phase = reconstruct.getPhase(v);
@@ -1789,9 +1922,10 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline gauge_wrapper<Float,FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc> >
-	   operator()(int dim, int x_cb, int parity) {
-	return gauge_wrapper<Float,FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc> >(*this, dim, x_cb, parity);
+      __device__ __host__ inline gauge_wrapper<RegType, Accessor> operator()(
+          int dim, int x_cb, int parity, Float phase = 1.0)
+      {
+        return gauge_wrapper<RegType, Accessor>(*this, dim, x_cb, parity, phase);
       }
 
       /**
@@ -1804,15 +1938,16 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline const gauge_wrapper<Float,FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc> >
-	   operator()(int dim, int x_cb, int parity) const {
-	return gauge_wrapper<Float,FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc> >
-	(const_cast<FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc>&>(*this), dim, x_cb, parity);
+      __device__ __host__ inline const gauge_wrapper<RegType, Accessor> operator()(
+          int dim, int x_cb, int parity, Float phase = 1.0) const
+      {
+        return gauge_wrapper<RegType, Accessor>(const_cast<Accessor &>(*this), dim, x_cb, parity, phase);
       }
 
-      __device__ __host__ inline void loadGhost(RegType v[length], int x, int dir, int parity) const {
+      __device__ __host__ inline void loadGhost(RegType v[length], int x, int dir, int parity, Float inphase = 1.0) const
+      {
         if (!ghost[dir]) { // load from main field not separate array
-          load(v, volumeCB+x, dir, parity); // an offset of size volumeCB puts us at the padded region
+          load(v, volumeCB + x, dir, parity, inphase); // an offset of size volumeCB puts us at the padded region
           // This also works perfectly when phases are stored. No need to change this.
         } else {
           const int M = reconLen / N;
@@ -1821,15 +1956,24 @@ namespace quda {
 #pragma unroll
           for (int i=0; i<M; i++) {
 	    // first do vectorized copy from memory into registers
-	    Vector vecTmp = vector_load<Vector>(ghost[dir]+parity*faceVolumeCB[dir]*(M*N + hasPhase),
-						i*faceVolumeCB[dir]+x);
-	    // second do copy converting into register type
+            Vector vecTmp = vector_load<Vector>(
+                ghost[dir] + parity * faceVolumeCB[dir] * (M * N + hasPhase), i * faceVolumeCB[dir] + x);
+            // second do copy converting into register type
 #pragma unroll
-	    for (int j=0; j<N; j++) copy(tmp[i*N+j], reinterpret_cast<Float*>(&vecTmp)[j]);
+            for (int j = 0; j < N; j++) copy(tmp[i * N + j], reinterpret_cast<Float *>(&vecTmp)[j]);
           }
-          RegType phase=0.;
-          if(hasPhase) copy(phase, ghost[dir][parity*faceVolumeCB[dir]*(M*N + 1) + faceVolumeCB[dir]*M*N + x]);
-          reconstruct.Unpack(v, tmp, x, dir, 2.*M_PI*phase, X, R);
+          RegType phase = 0.;
+
+          if (hasPhase) {
+
+            // if(stag_phase == QUDA_STAGGERED_PHASE_MILC )  {
+            //   phase = inphase < static_cast<Float>(0) ? static_cast<Float>(-1./(2.*M_PI)) : static_cast<Float>(1./2.*M_PI);
+            // } else {
+            copy(phase, ghost[dir][parity * faceVolumeCB[dir] * (M * N + 1) + faceVolumeCB[dir] * M * N + x]);
+            phase *= static_cast<RegType>(2.0) * static_cast<RegType>(M_PI);
+            // }
+          }
+          reconstruct.Unpack(v, tmp, x, dir, phase, X, R);
         }
       }
 
@@ -1868,9 +2012,10 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline gauge_ghost_wrapper<Float,FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc> >
-	   Ghost(int dim, int ghost_idx, int parity) {
-	return gauge_ghost_wrapper<Float,FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc> >(*this, dim, ghost_idx, parity);
+      __device__ __host__ inline gauge_ghost_wrapper<RegType, Accessor> Ghost(
+          int dim, int ghost_idx, int parity, Float phase = 1.0)
+      {
+        return gauge_ghost_wrapper<RegType, Accessor>(*this, dim, ghost_idx, parity, phase);
       }
 
       /**
@@ -1883,10 +2028,10 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline const gauge_ghost_wrapper<Float,FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc> >
-	   Ghost(int dim, int ghost_idx, int parity) const {
-	return gauge_ghost_wrapper<Float,FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc> >
-	(const_cast<FloatNOrder<Float,length,N,reconLenParam,stag_phase,huge_alloc>&>(*this), dim, ghost_idx, parity);
+      __device__ __host__ inline const gauge_ghost_wrapper<RegType, Accessor> Ghost(
+          int dim, int ghost_idx, int parity, Float phase = 1.0) const
+      {
+        return gauge_ghost_wrapper<RegType, Accessor>(const_cast<Accessor &>(*this), dim, ghost_idx, parity, phase);
       }
 
       __device__ __host__ inline void loadGhostEx(RegType v[length], int buff_idx, int extended_idx, int dir,
@@ -1956,8 +2101,7 @@ namespace quda {
       }
 
       size_t Bytes() const { return reconLen * sizeof(Float); }
-    };
-
+      };
 
   /**
      @brief This is just a dummy structure we use for trove to define the
@@ -2073,7 +2217,8 @@ namespace quda {
       }
       virtual ~QDPOrder() { ; }
 
-      __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity) const {
+      __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity, Float inphase = 1.0) const
+      {
 #if defined( __CUDA_ARCH__) && !defined(DISABLE_TROVE)
 	typedef S<Float,length> structure;
 	trove::coalesced_ptr<structure> gauge_((structure*)gauge[dir]);
@@ -2110,9 +2255,9 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline gauge_wrapper<Float,QDPOrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) {
-	return gauge_wrapper<Float,QDPOrder<Float,length> >(*this, dim, x_cb, parity);
+      __device__ __host__ inline gauge_wrapper<RegType, QDPOrder<Float, length>> operator()(int dim, int x_cb, int parity)
+      {
+        return gauge_wrapper<RegType, QDPOrder<Float, length>>(*this, dim, x_cb, parity);
       }
 
       /**
@@ -2125,10 +2270,11 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline const gauge_wrapper<Float,QDPOrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) const {
-	return gauge_wrapper<Float,QDPOrder<Float,length> >
-	(const_cast<QDPOrder<Float,length>&>(*this), dim, x_cb, parity);
+      __device__ __host__ inline const gauge_wrapper<RegType, QDPOrder<Float, length>> operator()(
+          int dim, int x_cb, int parity) const
+      {
+        return gauge_wrapper<RegType, QDPOrder<Float, length>>(
+            const_cast<QDPOrder<Float, length> &>(*this), dim, x_cb, parity);
       }
 
       size_t Bytes() const { return length * sizeof(Float); }
@@ -2150,12 +2296,13 @@ namespace quda {
       }
       virtual ~QDPJITOrder() { ; }
 
-      __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity) const {
-	for (int i=0; i<length; i++) {
-	  int z = i%2;
-	  int rolcol = i/2;
+      __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity, Float inphase = 1.0) const
+      {
+        for (int i = 0; i < length; i++) {
+          int z = i % 2;
+          int rolcol = i/2;
 	  v[i] = (RegType)gauge[dir][((z*(length/2) + rolcol)*2 + parity)*volumeCB + x];
-	}
+        }
       }
 
       __device__ __host__ inline void save(const RegType v[length], int x, int dir, int parity) {
@@ -2176,9 +2323,10 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline gauge_wrapper<Float,QDPJITOrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) {
-	return gauge_wrapper<Float,QDPJITOrder<Float,length> >(*this, dim, x_cb, parity);
+      __device__ __host__ inline gauge_wrapper<RegType, QDPJITOrder<Float, length>> operator()(
+          int dim, int x_cb, int parity)
+      {
+        return gauge_wrapper<RegType, QDPJITOrder<Float, length>>(*this, dim, x_cb, parity);
       }
 
       /**
@@ -2191,10 +2339,11 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline const gauge_wrapper<Float,QDPJITOrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) const {
-	return gauge_wrapper<Float,QDPJITOrder<Float,length> >
-	(const_cast<QDPJITOrder<Float,length>&>(*this), dim, x_cb, parity);
+      __device__ __host__ inline const gauge_wrapper<RegType, QDPJITOrder<Float, length>> operator()(
+          int dim, int x_cb, int parity) const
+      {
+        return gauge_wrapper<RegType, QDPJITOrder<Float, length>>(
+            const_cast<QDPJITOrder<Float, length> &>(*this), dim, x_cb, parity);
       }
 
       size_t Bytes() const { return length * sizeof(Float); }
@@ -2217,7 +2366,8 @@ namespace quda {
       { ; }
     virtual ~MILCOrder() { ; }
 
-    __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity) const {
+    __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity, Float inphase = 1.0) const
+    {
 #if defined( __CUDA_ARCH__) && !defined(DISABLE_TROVE)
       typedef S<Float,length> structure;
       trove::coalesced_ptr<structure> gauge_((structure*)gauge);
@@ -2254,9 +2404,9 @@ namespace quda {
        @return Instance of a gauge_wrapper that curries in access to
        this field at the above coordinates.
     */
-    __device__ __host__ inline gauge_wrapper<Float,MILCOrder<Float,length> >
-      operator()(int dim, int x_cb, int parity) {
-      return gauge_wrapper<Float,MILCOrder<Float,length> >(*this, dim, x_cb, parity);
+    __device__ __host__ inline gauge_wrapper<RegType, MILCOrder<Float, length>> operator()(int dim, int x_cb, int parity)
+    {
+      return gauge_wrapper<RegType, MILCOrder<Float, length>>(*this, dim, x_cb, parity);
     }
 
     /**
@@ -2269,10 +2419,11 @@ namespace quda {
        @return Instance of a gauge_wrapper that curries in access to
        this field at the above coordinates.
     */
-    __device__ __host__ inline const gauge_wrapper<Float,MILCOrder<Float,length> >
-      operator()(int dim, int x_cb, int parity) const {
-      return gauge_wrapper<Float,MILCOrder<Float,length> >
-	(const_cast<MILCOrder<Float,length>&>(*this), dim, x_cb, parity);
+    __device__ __host__ inline const gauge_wrapper<RegType, MILCOrder<Float, length>> operator()(
+        int dim, int x_cb, int parity) const
+    {
+      return gauge_wrapper<RegType, MILCOrder<Float, length>>(
+          const_cast<MILCOrder<Float, length> &>(*this), dim, x_cb, parity);
     }
 
     size_t Bytes() const { return length * sizeof(Float); }
@@ -2300,17 +2451,31 @@ namespace quda {
     const int geometry;
     const size_t offset;
     const size_t size;
-  MILCSiteOrder(const GaugeField &u, Float *gauge_=0, Float **ghost_=0) :
-    LegacyOrder<Float,length>(u, ghost_), gauge(gauge_ ? gauge_ : (Float*)u.Gauge_p()),
-      volumeCB(u.VolumeCB()), geometry(u.Geometry()),
-      offset(u.SiteOffset()), size(u.SiteSize()) { ; }
-  MILCSiteOrder(const MILCSiteOrder &order) : LegacyOrder<Float,length>(order),
-      gauge(order.gauge), volumeCB(order.volumeCB), geometry(order.geometry),
-      offset(order.offset), size(order.size)
-      { ; }
+    MILCSiteOrder(const GaugeField &u, Float *gauge_ = 0, Float **ghost_ = 0) :
+      LegacyOrder<Float, length>(u, ghost_),
+      gauge(gauge_ ? gauge_ : (Float *)u.Gauge_p()),
+      volumeCB(u.VolumeCB()),
+      geometry(u.Geometry()),
+      offset(u.SiteOffset()),
+      size(u.SiteSize())
+    {
+      if ((uintptr_t)((char *)gauge + offset) % 16 != 0) { errorQuda("MILC structure has misaligned offset"); }
+    }
+
+    MILCSiteOrder(const MILCSiteOrder &order) :
+      LegacyOrder<Float, length>(order),
+      gauge(order.gauge),
+      volumeCB(order.volumeCB),
+      geometry(order.geometry),
+      offset(order.offset),
+      size(order.size)
+    {
+    }
+
     virtual ~MILCSiteOrder() { ; }
 
-    __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity) const {
+    __device__ __host__ inline void load(RegType v[length], int x, int dir, int parity, Float inphase = 1.0) const
+    {
       // get base pointer
       const Float *gauge0 = reinterpret_cast<const Float*>(reinterpret_cast<const char*>(gauge) + (parity*volumeCB+x)*size + offset);
 
@@ -2368,7 +2533,8 @@ namespace quda {
     virtual ~CPSOrder() { ; }
 
     // we need to transpose and scale for CPS ordering
-    __device__ __host__ inline void load(RegType v[18], int x, int dir, int parity) const {
+    __device__ __host__ inline void load(RegType v[18], int x, int dir, int parity, Float inphase = 1.0) const
+    {
 #if defined( __CUDA_ARCH__) && !defined(DISABLE_TROVE)
       typedef S<Float,length> structure;
       trove::coalesced_ptr<structure> gauge_((structure*)gauge);
@@ -2421,9 +2587,9 @@ namespace quda {
        @return Instance of a gauge_wrapper that curries in access to
        this field at the above coordinates.
     */
-    __device__ __host__ inline gauge_wrapper<Float,CPSOrder<Float,length> >
-      operator()(int dim, int x_cb, int parity) {
-      return gauge_wrapper<Float,CPSOrder<Float,length> >(*this, dim, x_cb, parity);
+    __device__ __host__ inline gauge_wrapper<RegType, CPSOrder<Float, length>> operator()(int dim, int x_cb, int parity)
+    {
+      return gauge_wrapper<RegType, CPSOrder<Float, length>>(*this, dim, x_cb, parity);
     }
 
     /**
@@ -2436,10 +2602,11 @@ namespace quda {
        @return Instance of a gauge_wrapper that curries in access to
        this field at the above coordinates.
     */
-    __device__ __host__ inline const gauge_wrapper<Float,CPSOrder<Float,length> >
-      operator()(int dim, int x_cb, int parity) const {
-      return gauge_wrapper<Float,CPSOrder<Float,length> >
-	(const_cast<CPSOrder<Float,length>&>(*this), dim, x_cb, parity);
+    __device__ __host__ inline const gauge_wrapper<RegType, CPSOrder<Float, length>> operator()(
+        int dim, int x_cb, int parity) const
+    {
+      return gauge_wrapper<RegType, CPSOrder<Float, length>>(
+          const_cast<CPSOrder<Float, length> &>(*this), dim, x_cb, parity);
     }
 
     size_t Bytes() const { return Nc * Nc * 2 * sizeof(Float); }
@@ -2473,7 +2640,8 @@ namespace quda {
       virtual ~BQCDOrder() { ; }
 
       // we need to transpose for BQCD ordering
-      __device__ __host__ inline void load(RegType v[18], int x, int dir, int parity) const {
+      __device__ __host__ inline void load(RegType v[18], int x, int dir, int parity, Float inphase = 1.0) const
+      {
 #if defined( __CUDA_ARCH__) && !defined(DISABLE_TROVE)
       typedef S<Float,length> structure;
       trove::coalesced_ptr<structure> gauge_((structure*)gauge);
@@ -2524,9 +2692,9 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline gauge_wrapper<Float,BQCDOrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) {
-	return gauge_wrapper<Float,BQCDOrder<Float,length> >(*this, dim, x_cb, parity);
+      __device__ __host__ inline gauge_wrapper<RegType, BQCDOrder<Float, length>> operator()(int dim, int x_cb, int parity)
+      {
+        return gauge_wrapper<RegType, BQCDOrder<Float, length>>(*this, dim, x_cb, parity);
       }
 
       /**
@@ -2539,10 +2707,11 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline const gauge_wrapper<Float,BQCDOrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) const {
-	return gauge_wrapper<Float,BQCDOrder<Float,length> >
-	(const_cast<BQCDOrder<Float,length>&>(*this), dim, x_cb, parity);
+      __device__ __host__ inline const gauge_wrapper<RegType, BQCDOrder<Float, length>> operator()(
+          int dim, int x_cb, int parity) const
+      {
+        return gauge_wrapper<RegType, BQCDOrder<Float, length>>(
+            const_cast<BQCDOrder<Float, length> &>(*this), dim, x_cb, parity);
       }
 
       size_t Bytes() const { return Nc * Nc * 2 * sizeof(Float); }
@@ -2571,7 +2740,8 @@ namespace quda {
       virtual ~TIFROrder() { ; }
 
       // we need to transpose for TIFR ordering
-      __device__ __host__ inline void load(RegType v[18], int x, int dir, int parity) const {
+      __device__ __host__ inline void load(RegType v[18], int x, int dir, int parity, Float inphase = 1.0) const
+      {
 #if defined( __CUDA_ARCH__) && !defined(DISABLE_TROVE)
       typedef S<Float,length> structure;
       trove::coalesced_ptr<structure> gauge_((structure*)gauge);
@@ -2622,9 +2792,9 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline gauge_wrapper<Float,TIFROrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) {
-	return gauge_wrapper<Float,TIFROrder<Float,length> >(*this, dim, x_cb, parity);
+      __device__ __host__ inline gauge_wrapper<RegType, TIFROrder<Float, length>> operator()(int dim, int x_cb, int parity)
+      {
+        return gauge_wrapper<RegType, TIFROrder<Float, length>>(*this, dim, x_cb, parity);
       }
 
       /**
@@ -2637,10 +2807,11 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline const gauge_wrapper<Float,TIFROrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) const {
-	return gauge_wrapper<Float,TIFROrder<Float,length> >
-	(const_cast<TIFROrder<Float,length>&>(*this), dim, x_cb, parity);
+      __device__ __host__ inline const gauge_wrapper<RegType, TIFROrder<Float, length>> operator()(
+          int dim, int x_cb, int parity) const
+      {
+        return gauge_wrapper<RegType, TIFROrder<Float, length>>(
+            const_cast<TIFROrder<Float, length> &>(*this), dim, x_cb, parity);
       }
 
       size_t Bytes() const { return Nc * Nc * 2 * sizeof(Float); }
@@ -2695,9 +2866,10 @@ namespace quda {
       }
 
       // we need to transpose for TIFR ordering
-      __device__ __host__ inline void load(RegType v[18], int x, int dir, int parity) const {
+      __device__ __host__ inline void load(RegType v[18], int x, int dir, int parity, Float inphase = 1.0) const
+      {
 
-	int y = getPaddedIndex(x, parity);
+        int y = getPaddedIndex(x, parity);
 
 #if defined( __CUDA_ARCH__) && !defined(DISABLE_TROVE)
 	typedef S<Float,length> structure;
@@ -2730,7 +2902,7 @@ namespace quda {
 	  for (int j=0; j<Nc; j++)
 	    for (int z=0; z<2; z++)
 	      v_.v[(j*Nc+i)*2+z] = (Float)(v[(i*Nc+j)*2+z]) * scale;
-	gauge_[(dir*2+parity)*exVolumeCB + y] = v_;
+  gauge_[(dir*2+parity)*exVolumeCB + y] = v_;
 #else
 	for (int i=0; i<Nc; i++) {
 	  for (int j=0; j<Nc; j++) {
@@ -2752,9 +2924,10 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline gauge_wrapper<Float,TIFRPaddedOrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) {
-	return gauge_wrapper<Float,TIFRPaddedOrder<Float,length> >(*this, dim, x_cb, parity);
+      __device__ __host__ inline gauge_wrapper<RegType, TIFRPaddedOrder<Float, length>> operator()(
+          int dim, int x_cb, int parity)
+      {
+        return gauge_wrapper<RegType, TIFRPaddedOrder<Float, length>>(*this, dim, x_cb, parity);
       }
 
       /**
@@ -2767,10 +2940,11 @@ namespace quda {
 	 @return Instance of a gauge_wrapper that curries in access to
 	 this field at the above coordinates.
        */
-      __device__ __host__ inline const gauge_wrapper<Float,TIFRPaddedOrder<Float,length> >
-	   operator()(int dim, int x_cb, int parity) const {
-	return gauge_wrapper<Float,TIFRPaddedOrder<Float,length> >
-	(const_cast<TIFRPaddedOrder<Float,length>&>(*this), dim, x_cb, parity);
+      __device__ __host__ inline const gauge_wrapper<RegType, TIFRPaddedOrder<Float, length>> operator()(
+          int dim, int x_cb, int parity) const
+      {
+        return gauge_wrapper<RegType, TIFRPaddedOrder<Float, length>>(
+            const_cast<TIFRPaddedOrder<Float, length> &>(*this), dim, x_cb, parity);
       }
 
       size_t Bytes() const { return Nc * Nc * 2 * sizeof(Float); }
@@ -2803,28 +2977,99 @@ namespace quda {
   }
 
   // Use traits to reduce the template explosion
-  template<typename T,QudaReconstructType,int N=18,QudaStaggeredPhase stag=QUDA_STAGGERED_PHASE_NO,bool huge_alloc=gauge::default_huge_alloc> struct gauge_mapper { };
+  template <typename T, QudaReconstructType, int N = 18, QudaStaggeredPhase stag = QUDA_STAGGERED_PHASE_NO,
+      bool huge_alloc = gauge::default_huge_alloc, QudaGhostExchange ghostExchange = QUDA_GHOST_EXCHANGE_INVALID,
+      bool use_inphase = false>
+  struct gauge_mapper {
+  };
 
   // double precision
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<double,QUDA_RECONSTRUCT_NO,N,stag,huge_alloc> { typedef gauge::FloatNOrder<double, N, 2, N, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<double,QUDA_RECONSTRUCT_13,N,stag,huge_alloc> { typedef gauge::FloatNOrder<double, N, 2, 13, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<double,QUDA_RECONSTRUCT_12,N,stag,huge_alloc> { typedef gauge::FloatNOrder<double, N, 2, 12, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<double,QUDA_RECONSTRUCT_9,N,stag,huge_alloc> { typedef gauge::FloatNOrder<double, N, 2, 9, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<double,QUDA_RECONSTRUCT_8,N,stag,huge_alloc> { typedef gauge::FloatNOrder<double, N, 2, 8, stag, huge_alloc> type; };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<double, QUDA_RECONSTRUCT_NO, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<double, N, 2, N, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<double, QUDA_RECONSTRUCT_13, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<double, N, 2, 13, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<double, QUDA_RECONSTRUCT_12, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<double, N, 2, 12, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<double, QUDA_RECONSTRUCT_9, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<double, N, 2, 9, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<double, QUDA_RECONSTRUCT_8, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<double, N, 2, 8, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
 
   // single precision
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<float,QUDA_RECONSTRUCT_NO,N,stag,huge_alloc> { typedef gauge::FloatNOrder<float, N, 2, N, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<float,QUDA_RECONSTRUCT_13,N,stag,huge_alloc> { typedef gauge::FloatNOrder<float, N, 4, 13, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<float,QUDA_RECONSTRUCT_12,N,stag,huge_alloc> { typedef gauge::FloatNOrder<float, N, 4, 12, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<float,QUDA_RECONSTRUCT_9,N,stag,huge_alloc> { typedef gauge::FloatNOrder<float, N, 4, 9, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<float,QUDA_RECONSTRUCT_8,N,stag,huge_alloc> { typedef gauge::FloatNOrder<float, N, 4, 8, stag, huge_alloc> type; };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<float, QUDA_RECONSTRUCT_NO, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<float, N, 2, N, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<float, QUDA_RECONSTRUCT_13, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<float, N, 4, 13, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<float, QUDA_RECONSTRUCT_12, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<float, N, 4, 12, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<float, QUDA_RECONSTRUCT_9, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<float, N, 4, 9, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<float, QUDA_RECONSTRUCT_8, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<float, N, 4, 8, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
 
   // half precision
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<short,QUDA_RECONSTRUCT_NO,N,stag,huge_alloc> { typedef gauge::FloatNOrder<short, N, 2, N, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<short,QUDA_RECONSTRUCT_13,N,stag,huge_alloc> { typedef gauge::FloatNOrder<short, N, 4, 13, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<short,QUDA_RECONSTRUCT_12,N,stag,huge_alloc> { typedef gauge::FloatNOrder<short, N, 4, 12, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<short,QUDA_RECONSTRUCT_9,N,stag,huge_alloc> { typedef gauge::FloatNOrder<short, N, 4, 9, stag, huge_alloc> type; };
-  template<int N,QudaStaggeredPhase stag,bool huge_alloc> struct gauge_mapper<short,QUDA_RECONSTRUCT_8,N,stag,huge_alloc> { typedef gauge::FloatNOrder<short, N, 4, 8, stag, huge_alloc> type; };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<short, QUDA_RECONSTRUCT_NO, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<short, N, 2, N, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<short, QUDA_RECONSTRUCT_13, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<short, N, 4, 13, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<short, QUDA_RECONSTRUCT_12, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<short, N, 4, 12, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<short, QUDA_RECONSTRUCT_9, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<short, N, 4, 9, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<short, QUDA_RECONSTRUCT_8, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<short, N, 4, 8, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+
+  // quarter precision
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<char, QUDA_RECONSTRUCT_NO, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<char, N, 2, N, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<char, QUDA_RECONSTRUCT_13, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<char, N, 4, 13, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<char, QUDA_RECONSTRUCT_12, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<char, N, 4, 12, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<char, QUDA_RECONSTRUCT_9, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<char, N, 4, 9, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
+  template <int N, QudaStaggeredPhase stag, bool huge_alloc, QudaGhostExchange ghostExchange, bool use_inphase>
+  struct gauge_mapper<char, QUDA_RECONSTRUCT_8, N, stag, huge_alloc, ghostExchange, use_inphase> {
+    typedef gauge::FloatNOrder<char, N, 4, 8, stag, huge_alloc, ghostExchange, use_inphase> type;
+  };
 
   template<typename T, QudaGaugeFieldOrder order, int Nc> struct gauge_order_mapper { };
   template<typename T, int Nc> struct gauge_order_mapper<T,QUDA_QDP_GAUGE_ORDER,Nc> { typedef gauge::QDPOrder<T, 2*Nc*Nc> type; };

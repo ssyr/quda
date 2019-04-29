@@ -23,20 +23,18 @@ namespace quda {
   template <typename Float, int Nc, int Ns>
     struct ColorSpinor {
 
-      complex<Float> data[Nc*Ns];
+    static constexpr int size = Nc * Ns;
+    complex<Float> data[size];
 
-      __device__ __host__ inline ColorSpinor<Float, Nc, Ns>() {
+    __device__ __host__ inline ColorSpinor<Float, Nc, Ns>()
+    {
 #pragma unroll
-	for (int i=0; i<Nc*Ns; i++) {
-	  data[i] = 0;
-	}
+      for (int i = 0; i < size; i++) { data[i] = 0; }
       }
 
       __device__ __host__ inline ColorSpinor<Float, Nc, Ns>(const ColorSpinor<Float, Nc, Ns> &a) {
 #pragma unroll
-	for (int i=0; i<Nc*Ns; i++) {
-	  data[i] = a.data[i];
-	}
+        for (int i = 0; i < size; i++) { data[i] = a.data[i]; }
       }
 
       __device__ __host__ inline ColorSpinor<Float, Nc, Ns>& operator=(const complex<Float> *a) {
@@ -54,21 +52,39 @@ namespace quda {
       __device__ __host__ inline ColorSpinor<Float, Nc, Ns>& operator=(const ColorSpinor<Float, Nc, Ns> &a) {
 	if (this != &a) {
 #pragma unroll
-	  for (int i=0; i<Nc*Ns; i++) {
-	    data[i] = a.data[i];
-	  }
-	}
+          for (int i = 0; i < size; i++) { data[i] = a.data[i]; }
+        }
 	return *this;
       }
 
-      __device__ __host__ inline ColorSpinor<Float, Nc, Ns>& operator+=(const ColorSpinor<Float, Nc, Ns> &a) {
-	if (this != &a) {
+      __device__ __host__ inline ColorSpinor<Float, Nc, Ns> operator-() const
+      {
+        ColorSpinor<Float, Nc, Ns> a;
 #pragma unroll
-	  for (int i=0; i<Nc*Ns; i++) {
-	    data[i] += a.data[i];
-	  }
-	}
-	return *this;
+        for (int i = 0; i < size; i++) { a.data[i] = -data[i]; }
+        return a;
+      }
+
+      __device__ __host__ inline ColorSpinor<Float, Nc, Ns>& operator+=(const ColorSpinor<Float, Nc, Ns> &a) {
+#pragma unroll
+        for (int i = 0; i < size; i++) { data[i] += a.data[i]; }
+        return *this;
+      }
+
+      template <typename T> __device__ __host__ inline ColorSpinor<Float, Nc, Ns> &operator*=(const T &a)
+      {
+#pragma unroll
+        for (int i = 0; i < size; i++) { data[i] *= a; }
+        return *this;
+      }
+
+      __device__ __host__ inline ColorSpinor<Float, Nc, Ns> &operator-=(const ColorSpinor<Float, Nc, Ns> &a)
+      {
+        if (this != &a) {
+#pragma unroll
+          for (int i = 0; i < Nc * Ns; i++) { data[i] -= a.data[i]; }
+        }
+        return *this;
       }
 
       template<typename S>
@@ -100,19 +116,27 @@ namespace quda {
       __device__ __host__ inline const complex<Float>& operator()(int s, int c) const { return data[s*Nc + c]; }
 
       /**
-	 @brief 1-d accessor functor
-	 @param[in[ idx Index
-	 @return Complex number at this index
+         @brief 1-d accessor functor
+         @param[in] idx Index
+         @return Complex number at this index
       */
       __device__ __host__ inline complex<Float>& operator()(int idx) { return data[idx]; }
 
       /**
-	 @brief 1-d accessor functor
-	 @param[in[ idx Index
-	 @return Complex number at this index
+         @brief 1-d accessor functor
+         @param[in] idx Index
+         @return Complex number at this index
       */
       __device__ __host__ inline const complex<Float>& operator()(int idx) const { return data[idx]; }
 
+      __device__ __host__ void print() const
+      {
+        for (int s=0; s<Ns; s++) {
+          for (int c=0; c<Nc; c++) {
+            printf("s=%d c=%d %e %e\n", s, c, data[s*Nc+c].real(), data[s*Nc+c].imag());
+          }
+        }
+      }
     };
 
   /**
@@ -121,40 +145,38 @@ namespace quda {
    */
   template <typename Float, int Nc>
     struct ColorSpinor<Float, Nc, 4> {
-    static const int Ns = 4;
-    complex<Float> data[Nc*4];
+    static constexpr int Ns = 4;
+    static constexpr int size = Nc * Ns;
+    complex<Float> data[size];
 
     __device__ __host__ inline ColorSpinor<Float, Nc, 4>() {
 #pragma unroll
-      for (int i=0; i<Nc*Ns; i++) {
-	data[i] = 0;
-      }      
+      for (int i = 0; i < size; i++) { data[i] = 0; }
     }
 
     __device__ __host__ inline ColorSpinor<Float, Nc, 4>(const ColorSpinor<Float, Nc, 4> &a) {
 #pragma unroll
-      for (int i=0; i<Nc*Ns; i++) {
-	data[i] = a.data[i];
-      }      
+      for (int i = 0; i < size; i++) { data[i] = a.data[i]; }
     }
 
     __device__ __host__ inline ColorSpinor<Float, Nc, 4>& operator=(const ColorSpinor<Float, Nc, 4> &a) {
       if (this != &a) {
 #pragma unroll
-	for (int i=0; i<Nc*Ns; i++) {
-	  data[i] = a.data[i];
-	}
+        for (int i = 0; i < size; i++) { data[i] = a.data[i]; }
       }
       return *this;
     }
 
     __device__ __host__ inline ColorSpinor<Float, Nc, 4>& operator+=(const ColorSpinor<Float, Nc, 4> &a) {
-      if (this != &a) {
 #pragma unroll
-	for (int i=0; i<Nc*Ns; i++) {
-	  data[i] += a.data[i];
-	}
-      }
+      for (int i = 0; i < size; i++) { data[i] += a.data[i]; }
+      return *this;
+    }
+
+    template <typename T> __device__ __host__ inline ColorSpinor<Float, Nc, 4> &operator*=(const T &a)
+    {
+#pragma unroll
+      for (int i = 0; i < size; i++) { data[i] *= a; }
       return *this;
     }
 
@@ -306,7 +328,8 @@ namespace quda {
 	@param sign Positive or negative projector
 	@return The spin-projected Spinor
     */
-    __device__ __host__ inline ColorSpinor<Float,Nc,2> project(int dim, int sign) {
+    __device__ __host__ inline ColorSpinor<Float, Nc, 2> project(int dim, int sign) const
+    {
       ColorSpinor<Float,Nc,2> proj;
       complex<Float> j(0.0,1.0);
       
@@ -383,6 +406,24 @@ namespace quda {
 	  break;
 	}
 	break;
+      case 4:
+        switch (sign) {
+        case 1: // positive projector
+#pragma unroll
+          for (int i = 0; i < Nc; i++) {
+            proj(0, i) = (*this)(0, i) + (*this)(2, i);
+            proj(1, i) = (*this)(1, i) + (*this)(3, i);
+          }
+          break;
+        case -1: // negative projector
+#pragma unroll
+          for (int i = 0; i < Nc; i++) {
+            proj(0, i) = (*this)(0, i) - (*this)(2, i);
+            proj(1, i) = (*this)(1, i) - (*this)(3, i);
+          }
+          break;
+        }
+        break;
       }
 
       return proj;
@@ -577,14 +618,14 @@ namespace quda {
 
     /**
        @brief 1-d accessor functor
-       @param[in[ idx Index
+       @param[in] idx Index
        @return Complex number at this index
      */
     __device__ __host__ inline complex<Float>& operator()(int idx) { return data[idx]; }
 
     /**
        @brief 1-d accessor functor
-       @param[in[ idx Index
+       @param[in] idx Index
        @return Complex number at this index
      */
     __device__ __host__ inline const complex<Float>& operator()(int idx) const { return data[idx]; }
@@ -632,7 +673,8 @@ namespace quda {
       *this = a;
     }
 
-  __device__ __host__ void print() {
+    __device__ __host__ void print() const
+    {
       for (int s=0; s<Ns; s++) {
 	for (int c=0; c<Nc; c++) {
 	  printf("s=%d c=%d %e %e\n", s, c, data[s*Nc+c].real(), data[s*Nc+c].imag());
@@ -647,46 +689,44 @@ namespace quda {
    */
   template <typename Float, int Nc>
     struct ColorSpinor<Float, Nc, 2> {
-    static const int Ns = 2;
-    complex<Float> data[Nc*2];
-    
+    static constexpr int Ns = 2;
+    static constexpr int size = Ns * Nc;
+    complex<Float> data[size];
+
     __device__ __host__ inline ColorSpinor<Float, Nc, 2>() {
 #pragma unroll
-      for (int i=0; i<Nc*Ns; i++) {
-	data[i] = 0;
-      }      
+      for (int i = 0; i < size; i++) { data[i] = 0; }
     }
 
     __device__ __host__ inline ColorSpinor<Float, Nc, 2>(const ColorSpinor<Float, Nc, 2> &a) {
 #pragma unroll
-      for (int i=0; i<Nc*Ns; i++) {
-	data[i] = a.data[i];
-      }      
+      for (int i = 0; i < size; i++) { data[i] = a.data[i]; }
     }
 
 
     __device__ __host__ inline ColorSpinor<Float, Nc, 2>& operator=(const ColorSpinor<Float, Nc, 2> &a) {
       if (this != &a) {
 #pragma unroll
-	for (int i=0; i<Nc*Ns; i++) {
-	  data[i] = a.data[i];
-	}
+        for (int i = 0; i < size; i++) { data[i] = a.data[i]; }
       }
       return *this;
     }
 
     __device__ __host__ inline ColorSpinor<Float, Nc, 2>& operator+=(const ColorSpinor<Float, Nc, 2> &a) {
-      if (this != &a) {
 #pragma unroll
-	for (int i=0; i<Nc*Ns; i++) {
-	  data[i] += a.data[i];
-	}
-      }
+      for (int i = 0; i < size; i++) { data[i] += a.data[i]; }
+      return *this;
+    }
+
+    template <typename T> __device__ __host__ inline ColorSpinor<Float, Nc, 2> &operator*=(const T &a)
+    {
+#pragma unroll
+      for (int i = 0; i < size; i++) { data[i] *= a; }
       return *this;
     }
 
     /**
-       @brief Reconstruct twor-component spinor to a four-component spinor
+       @brief Reconstruct two-component spinor to a four-component spinor
        @param[in] chirality Which chirality we assigning to
     */
     __device__ __host__ inline ColorSpinor<Float,Nc,4> chiral_reconstruct(int chirality) const {
@@ -707,7 +747,8 @@ namespace quda {
 	@param sign Positive or negative projector
 	@return The spin-reconstructed Spinor
     */
-      __device__ __host__ inline ColorSpinor<Float,Nc,4> reconstruct(int dim, int sign) {
+    __device__ __host__ inline ColorSpinor<Float, Nc, 4> reconstruct(int dim, int sign) const
+    {
       ColorSpinor<Float,Nc,4> recon;
       complex<Float> j(0.0,1.0);
       
@@ -800,6 +841,28 @@ namespace quda {
 	  break;
 	}
 	break;
+      case 4:
+        switch (sign) {
+        case 1: // positive projector
+#pragma unroll
+          for (int i = 0; i < Nc; i++) {
+            recon(0, i) = (*this)(0, i);
+            recon(1, i) = (*this)(1, i);
+            recon(2, i) = (*this)(0, i);
+            recon(3, i) = (*this)(1, i);
+          }
+          break;
+        case -1: // negative projector
+#pragma unroll
+          for (int i = 0; i < Nc; i++) {
+            recon(0, i) = (*this)(0, i);
+            recon(1, i) = (*this)(1, i);
+            recon(2, i) = -(*this)(0, i);
+            recon(3, i) = -(*this)(1, i);
+          }
+          break;
+        }
+        break;
       }
       return recon;
     }
@@ -822,14 +885,14 @@ namespace quda {
 
     /**
        @brief 1-d accessor functor
-       @param[in[ idx Index
+       @param[in] idx Index
        @return Complex number at this index
      */
     __device__ __host__ inline complex<Float>& operator()(int idx) { return data[idx]; }
 
     /**
        @brief 1-d accessor functor
-       @param[in[ idx Index
+       @param[in] idx Index
        @return Complex number at this index
      */
     __device__ __host__ inline const complex<Float>& operator()(int idx) const { return data[idx]; }
@@ -846,7 +909,8 @@ namespace quda {
     template<typename S>
       __device__ __host__ inline void operator=(const colorspinor_ghost_wrapper<Float, S> &s);
 
-    __device__ __host__ void print() {
+    __device__ __host__ void print() const
+    {
       for (int s=0; s<Ns; s++) {
 	for (int c=0; c<Nc; c++) {
 	  printf("s=%d c=%d %e %e\n", s, c, data[s*Nc+c].real(), data[s*Nc+c].imag());
@@ -1004,7 +1068,7 @@ namespace quda {
     ColorSpinor<Float,Nc,Ns> operator*(const HMatrix<Float,Nc*Ns> &A, const ColorSpinor<Float,Nc,Ns> &x) {
 
     ColorSpinor<Float,Nc,Ns> y;
-    constexpr int N = Nc*Ns;
+    constexpr int N = Ns * Nc;
 
 #pragma unroll
     for (int i=0; i<N; i++) {

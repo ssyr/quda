@@ -23,9 +23,9 @@ namespace quda {
     double kappa;
     double mass;
     double m5; // used by domain wall only
-    int Ls;    //!NEW: used by domain wall and twisted mass
-    double b_5[QUDA_MAX_DWF_LS];    //!NEW: used by mobius domain wall only  
-    double c_5[QUDA_MAX_DWF_LS];    //!NEW: used by mobius domain wall only
+    int Ls;    // used by domain wall and twisted mass
+    Complex b_5[QUDA_MAX_DWF_LS]; // used by mobius domain wall only
+    Complex c_5[QUDA_MAX_DWF_LS]; // used by mobius domain wall only
     QudaMatPCType matpcType;
     QudaDagType dagger;
     cudaGaugeField *gauge;
@@ -42,6 +42,8 @@ namespace quda {
 
     int commDim[QUDA_MAX_DIM]; // whether to do comms or not
 
+    QudaPrecision halo_precision; // only does something for DiracCoarse at present
+
     // for multigrid only
     Transfer *transfer; 
     Dirac *dirac;
@@ -49,7 +51,7 @@ namespace quda {
   DiracParam() 
     : type(QUDA_INVALID_DIRAC), kappa(0.0), m5(0.0), matpcType(QUDA_MATPC_INVALID),
       dagger(QUDA_DAG_INVALID), gauge(0), clover(0), mu(0.0), mu_factor(0.0), epsilon(0.0),
-      tmp1(0), tmp2(0)
+      tmp1(0), tmp2(0), halo_precision(QUDA_INVALID_PRECISION)
     {
       for (int i=0; i<QUDA_MAX_DIM; i++) commDim[i] = 1;
     }
@@ -65,8 +67,11 @@ namespace quda {
       printfQuda("dagger = %d\n", dagger);
       printfQuda("mu = %g\n", mu);
       printfQuda("epsilon = %g\n", epsilon);
+      printfQuda("halo_precision = %d\n", halo_precision);
       for (int i=0; i<QUDA_MAX_DIM; i++) printfQuda("commDim[%d] = %d\n", i, commDim[i]);
-      for (int i=0; i<Ls; i++) printfQuda("b_5[%d] = %e\t c_5[%d] = %e\n", i,b_5[i],i,c_5[i]);
+      for (int i = 0; i < Ls; i++)
+        printfQuda(
+            "b_5[%d] = %e %e \t c_5[%d] = %e %e\n", i, b_5[i].real(), b_5[i].imag(), i, c_5[i].real(), c_5[i].imag());
     }
 
   };
@@ -102,11 +107,10 @@ namespace quda {
     mutable ColorSpinorField *tmp1; // temporary hack
     mutable ColorSpinorField *tmp2; // temporary hack
     QudaDiracType type; 
+    mutable QudaPrecision halo_precision; // only does something for DiracCoarse at present
 
     bool newTmp(ColorSpinorField **, const ColorSpinorField &) const;
     void deleteTmp(ColorSpinorField **, const bool &reset) const;
-
-    QudaTune tune;
 
     mutable int commDim[QUDA_MAX_DIM]; // whether do comms or not
 
@@ -178,6 +182,8 @@ namespace quda {
 				double kappa, double mass=0., double mu=0., double mu_factor=0.) const
     {errorQuda("Not implemented");}
 
+    QudaPrecision HaloPrecision() const { return halo_precision; }
+    void setHaloPrecision(QudaPrecision halo_precision_) const { halo_precision = halo_precision_; }
   };
 
   // Full Wilson
@@ -328,8 +334,9 @@ namespace quda {
     double m5;
     double kappa5;
     int Ls; // length of the fifth dimension
+    void checkDWF(const ColorSpinorField &out, const ColorSpinorField &in) const;
 
-  public:
+public:
     DiracDomainWall(const DiracParam &param);
     DiracDomainWall(const DiracDomainWall &dirac);
     virtual ~DiracDomainWall();
@@ -371,25 +378,45 @@ namespace quda {
 		     const QudaSolutionType) const;
   };
 
-// 4d Even-odd preconditioned domain wall
-  class DiracDomainWall4DPC : public DiracDomainWallPC {
+  // Full domain wall, but with 4-d parity ordered fields
+  class DiracDomainWall4D : public DiracDomainWall
+  {
 
-  private:
-
-  public:
-    DiracDomainWall4DPC(const DiracParam &param);
-    DiracDomainWall4DPC(const DiracDomainWall4DPC &dirac);
-    virtual ~DiracDomainWall4DPC();
-    DiracDomainWall4DPC& operator=(const DiracDomainWall4DPC &dirac);
+private:
+public:
+    DiracDomainWall4D(const DiracParam &param);
+    DiracDomainWall4D(const DiracDomainWall4D &dirac);
+    virtual ~DiracDomainWall4D();
+    DiracDomainWall4D &operator=(const DiracDomainWall4D &dirac);
 
     void Dslash4(ColorSpinorField &out, const ColorSpinorField &in, const QudaParity parity) const;
     void Dslash5(ColorSpinorField &out, const ColorSpinorField &in, const QudaParity parity) const;
-    void Dslash5inv(ColorSpinorField &out, const ColorSpinorField &in, const QudaParity parity, const double &kappa5) const;
-
     void Dslash4Xpay(ColorSpinorField &out, const ColorSpinorField &in,
 		     const QudaParity parity, const ColorSpinorField &x, const double &k) const;
     void Dslash5Xpay(ColorSpinorField &out, const ColorSpinorField &in,
 		     const QudaParity parity, const ColorSpinorField &x, const double &k) const;
+
+    void M(ColorSpinorField &out, const ColorSpinorField &in) const;
+    void MdagM(ColorSpinorField &out, const ColorSpinorField &in) const;
+
+    void prepare(ColorSpinorField *&src, ColorSpinorField *&sol, ColorSpinorField &x, ColorSpinorField &b,
+        const QudaSolutionType) const;
+    void reconstruct(ColorSpinorField &x, const ColorSpinorField &b, const QudaSolutionType) const;
+  };
+
+  // 4d Even-odd preconditioned domain wall
+  class DiracDomainWall4DPC : public DiracDomainWall4D
+  {
+
+private:
+public:
+    DiracDomainWall4DPC(const DiracParam &param);
+    DiracDomainWall4DPC(const DiracDomainWall4DPC &dirac);
+    virtual ~DiracDomainWall4DPC();
+    DiracDomainWall4DPC &operator=(const DiracDomainWall4DPC &dirac);
+
+    void Dslash5inv(
+        ColorSpinorField &out, const ColorSpinorField &in, const QudaParity parity, const double &kappa5) const;
     void Dslash5invXpay(ColorSpinorField &out, const ColorSpinorField &in,
 			const QudaParity parity, const double &kappa5, const ColorSpinorField &x, const double &k) const;
 
@@ -408,8 +435,15 @@ namespace quda {
 
   protected:
     //Mobius coefficients
-    double b_5[QUDA_MAX_DWF_LS];
-    double c_5[QUDA_MAX_DWF_LS];
+      Complex b_5[QUDA_MAX_DWF_LS];
+      Complex c_5[QUDA_MAX_DWF_LS];
+
+      /**
+         Whether we are using classical Mobius with constant real-valued
+         b and c coefficients, or zMobius with complex-valued variable
+         coefficients
+      */
+      bool zMobius;
 
   public:
     DiracMobius(const DiracParam &param);
@@ -468,24 +502,13 @@ namespace quda {
   class DiracTwistedMass : public DiracWilson {
 
   protected:
-    double mu;
-    double epsilon;
-    void twistedApply(ColorSpinorField &out, const ColorSpinorField &in, 
-		      const QudaTwistGamma5Type twistType) const;
-    void TwistedDslash(ColorSpinorField &out, const ColorSpinorField &in,
-		       QudaParity parity, QudaTwistDslashType twistDslashType,
-		       double a, double b, double c, double d) const;
-    void TwistedDslashXpay(ColorSpinorField &out, const ColorSpinorField &in,
-			   const ColorSpinorField &x, QudaParity parity,
-			   QudaTwistDslashType twistDslashType,
-			   double a, double b, double c, double d) const;
+      mutable double mu;
+      mutable double epsilon;
+      void twistedApply(ColorSpinorField &out, const ColorSpinorField &in, const QudaTwistGamma5Type twistType) const;
+      virtual void Dslash(ColorSpinorField &out, const ColorSpinorField &in, QudaParity parity) const;
+      virtual void DslashXpay(ColorSpinorField &out, const ColorSpinorField &in, QudaParity parity,
+          const ColorSpinorField &x, const double &k) const;
 
-    void NdegTwistedDslash(ColorSpinorField &out, const ColorSpinorField &in,
-			   QudaParity parity, QudaTwistDslashType twistDslashType,
-			   double a, double b, double c, double d) const;
-    void NdegTwistedDslashXpay(ColorSpinorField &out, const ColorSpinorField &in,
-			       const ColorSpinorField &x,  QudaParity parity, QudaTwistDslashType twistDslashType,
-			       double a, double b, double c, double d) const;
   public:
     DiracTwistedMass(const DiracTwistedMass &dirac);
     DiracTwistedMass(const DiracParam &param, const int nDim);
@@ -576,7 +599,11 @@ namespace quda {
     virtual ~DiracTwistedClover();
     DiracTwistedClover& operator=(const DiracTwistedClover &dirac);
 
-    void TwistClover(ColorSpinorField &out, const ColorSpinorField &in, const int parity) const;	//IS PARITY REQUIRED???
+    void TwistClover(ColorSpinorField &out, const ColorSpinorField &in, const int parity) const;
+
+    virtual void Dslash(ColorSpinorField &out, const ColorSpinorField &in, const QudaParity parity) const;
+    virtual void DslashXpay(ColorSpinorField &out, const ColorSpinorField &in, const QudaParity parity,
+        const ColorSpinorField &x, const double &k) const;
 
     virtual void M(ColorSpinorField &out, const ColorSpinorField &in) const;
     virtual void MdagM(ColorSpinorField &out, const ColorSpinorField &in) const;
@@ -607,7 +634,9 @@ namespace quda {
   // Even-odd preconditioned twisted mass with a clover term
   class DiracTwistedCloverPC : public DiracTwistedClover {
 
-  public:
+    mutable bool reverse; /** swap the order of the derivative D and the diagonal inverse A^{-1} */
+
+public:
     DiracTwistedCloverPC(const DiracTwistedCloverPC &dirac);
     DiracTwistedCloverPC(const DiracParam &param, const int nDim);
 
@@ -616,10 +645,9 @@ namespace quda {
 
     void TwistCloverInv(ColorSpinorField &out, const ColorSpinorField &in, const int parity) const;
 
-    virtual void Dslash(ColorSpinorField &out, const ColorSpinorField &in, 
-      const QudaParity parity) const;
-    virtual void DslashXpay(ColorSpinorField &out, const ColorSpinorField &in, 
-          const QudaParity parity, const ColorSpinorField &x, const double &k) const;
+    virtual void Dslash(ColorSpinorField &out, const ColorSpinorField &in, const QudaParity parity) const;
+    virtual void DslashXpay(ColorSpinorField &out, const ColorSpinorField &in, const QudaParity parity,
+        const ColorSpinorField &x, const double &k) const;
     void M(ColorSpinorField &out, const ColorSpinorField &in) const;
     void MdagM(ColorSpinorField &out, const ColorSpinorField &in) const;
 
@@ -799,12 +827,14 @@ namespace quda {
     const bool gpu_setup; /** Where to do the coarse-operator construction*/
     mutable bool init_gpu; /** Whether this instance did the GPU allocation or not */
     mutable bool init_cpu; /** Whether this instance did the CPU allocation or not */
+    const bool mapped; /** Whether we allocate Y and X GPU fields in mapped memory or not */
 
     /**
        @brief Allocate the Y and X fields
        @param[in] gpu Whether to allocate on gpu (true) or cpu (false)
+       @param[in] mapped whether to put gpu allocations into mapped memory
      */
-    void createY(bool gpu = true) const;
+    void createY(bool gpu = true, bool mapped = false) const;
 
     /**
        @brief Allocate the Yhat and Xinv fields
@@ -819,8 +849,9 @@ namespace quda {
     /**
        @param[in] param Parameters defining this operator
        @param[in] gpu_setup Whether to do the setup on GPU or CPU
+       @param[in] mapped Set to true to put Y and X fields in mapped memory
      */
-    DiracCoarse(const DiracParam &param, bool gpu_setup=true);
+    DiracCoarse(const DiracParam &param, bool gpu_setup=true, bool mapped=false);
 
     /**
        @param[in] param Parameters defining this operator
@@ -1056,10 +1087,10 @@ namespace quda {
     const Dirac *dirac;
 
   public:
-    DiracMatrix(const Dirac &d) : dirac(&d) { }
-    DiracMatrix(const Dirac *d) : dirac(d) { }
-    DiracMatrix(const DiracMatrix &mat) : dirac(mat.dirac) { }
-    DiracMatrix(const DiracMatrix *mat) : dirac(mat->dirac) { }
+    DiracMatrix(const Dirac &d) : dirac(&d), shift(0.0) { }
+    DiracMatrix(const Dirac *d) : dirac(d), shift(0.0) { }
+    DiracMatrix(const DiracMatrix &mat) : dirac(mat.dirac), shift(mat.shift) { }
+    DiracMatrix(const DiracMatrix *mat) : dirac(mat->dirac), shift(mat->shift) { }
     virtual ~DiracMatrix() { }
 
     virtual void operator()(ColorSpinorField &out, const ColorSpinorField &in) const = 0;
@@ -1086,6 +1117,9 @@ namespace quda {
     }
     
     const Dirac* Expose() { return dirac; }
+
+    //! Shift term added onto operator (M/M^dag M/M M^dag + shift)
+    double shift;
   };
 
   class DiracM : public DiracMatrix {
@@ -1097,6 +1131,7 @@ namespace quda {
     void operator()(ColorSpinorField &out, const ColorSpinorField &in) const
     {
       dirac->M(out, in);
+      if (shift != 0.0) blas::axpy(shift, const_cast<ColorSpinorField&>(in), out);
     }
 
     void operator()(ColorSpinorField &out, const ColorSpinorField &in, ColorSpinorField &tmp) const
@@ -1104,6 +1139,7 @@ namespace quda {
       bool reset1 = false;
       if (!dirac->tmp1) { dirac->tmp1 = &tmp; reset1 = true; }
       dirac->M(out, in);
+      if (shift != 0.0) blas::axpy(shift, const_cast<ColorSpinorField&>(in), out);
       if (reset1) { dirac->tmp1 = NULL; reset1 = false; }
     }
 
@@ -1115,6 +1151,7 @@ namespace quda {
       if (!dirac->tmp1) { dirac->tmp1 = &Tmp1; reset1 = true; }
       if (!dirac->tmp2) { dirac->tmp2 = &Tmp2; reset2 = true; }
       dirac->M(out, in);
+      if (shift != 0.0) blas::axpy(shift, const_cast<ColorSpinorField&>(in), out);
       if (reset2) { dirac->tmp2 = NULL; reset2 = false; }
       if (reset1) { dirac->tmp1 = NULL; reset1 = false; }
     }
@@ -1128,11 +1165,10 @@ namespace quda {
   class DiracMdagM : public DiracMatrix {
 
   public:
-    DiracMdagM(const Dirac &d) : DiracMatrix(d), shift(0.0) { }
-    DiracMdagM(const Dirac *d) : DiracMatrix(d), shift(0.0) { }
+    DiracMdagM(const Dirac &d) : DiracMatrix(d) { }
+    DiracMdagM(const Dirac *d) : DiracMatrix(d) { }
 
-    //! Shift term added onto operator (M^dag M + shift)
-    double shift;
+    
 
     void operator()(ColorSpinorField &out, const ColorSpinorField &in) const
     {
@@ -1169,11 +1205,8 @@ namespace quda {
   class DiracMMdag : public DiracMatrix {
 
   public:
-    DiracMMdag(const Dirac &d) : DiracMatrix(d), shift(0.0) { }
-    DiracMMdag(const Dirac *d) : DiracMatrix(d), shift(0.0) { }
-
-    //! Shift term added onto operator (M^dag M + shift)
-    double shift;
+    DiracMMdag(const Dirac &d) : DiracMatrix(d) { }
+    DiracMMdag(const Dirac *d) : DiracMatrix(d) { }
 
     void operator()(ColorSpinorField &out, const ColorSpinorField &in) const
     {
@@ -1215,12 +1248,14 @@ namespace quda {
     void operator()(ColorSpinorField &out, const ColorSpinorField &in) const
     {
       dirac->Mdag(out, in);
+      if (shift != 0.0) blas::axpy(shift, const_cast<ColorSpinorField&>(in), out);
     }
 
     void operator()(ColorSpinorField &out, const ColorSpinorField &in, ColorSpinorField &tmp) const
     {
       dirac->tmp1 = &tmp;
       dirac->Mdag(out, in);
+      if (shift != 0.0) blas::axpy(shift, const_cast<ColorSpinorField&>(in), out);
       dirac->tmp1 = NULL;
     }
 
@@ -1230,6 +1265,7 @@ namespace quda {
       dirac->tmp1 = &Tmp1;
       dirac->tmp2 = &Tmp2;
       dirac->Mdag(out, in);
+      if (shift != 0.0) blas::axpy(shift, const_cast<ColorSpinorField&>(in), out);
       dirac->tmp2 = NULL;
       dirac->tmp1 = NULL;
     }

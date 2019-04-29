@@ -1,4 +1,5 @@
 #include <quda_internal.h>
+#include <tune_quda.h>
 #include <gauge_field_order.h>
 
 namespace quda {
@@ -334,14 +335,8 @@ namespace quda {
 
     if (u.isNative()) {
       if (u.Reconstruct() == QUDA_RECONSTRUCT_NO) {
-	if (typeid(Float)==typeid(short) && u.LinkType() == QUDA_ASQTAD_FAT_LINKS) {
-	  extractGhostEx<short,length>(FloatNOrder<short,length,2,19>(u, 0, (short**)Ghost), 
-				       dim, u.SurfaceCB(), u.X(), R, extract, u, location);
-	} else {
-	  typedef typename gauge_mapper<Float,QUDA_RECONSTRUCT_NO>::type G;
-	  extractGhostEx<Float,length>(G(u, 0, Ghost),
-				       dim, u.SurfaceCB(), u.X(), R, extract, u, location);
-	}
+        typedef typename gauge_mapper<Float, QUDA_RECONSTRUCT_NO>::type G;
+        extractGhostEx<Float, length>(G(u, 0, Ghost), dim, u.SurfaceCB(), u.X(), R, extract, u, location);
       } else if (u.Reconstruct() == QUDA_RECONSTRUCT_12) {
 	typedef typename gauge_mapper<Float,QUDA_RECONSTRUCT_12>::type G;
 	extractGhostEx<Float,length>(G(u, 0, Ghost),

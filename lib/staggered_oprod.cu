@@ -16,7 +16,7 @@ namespace quda {
 #include <texture.h>
   }
 
-  enum KernelType {OPROD_INTERIOR_KERNEL, OPROD_EXTERIOR_KERNEL};
+  enum OprodKernelType { OPROD_INTERIOR_KERNEL, OPROD_EXTERIOR_KERNEL };
 
   template<typename Float, typename Output, typename InputA, typename InputB>
     struct StaggeredOprodArg {
@@ -26,7 +26,7 @@ namespace quda {
       unsigned int dir;
       unsigned int ghostOffset[4];
       unsigned int displacement;
-      KernelType kernelType;
+      OprodKernelType kernelType;
       int nFace;
       bool partitioned[4];
       InputA inA;
@@ -35,21 +35,19 @@ namespace quda {
       Output outB;
       Float coeff[2];
 
-      StaggeredOprodArg(const unsigned int parity,
-			const unsigned int dir,
-			const unsigned int *ghostOffset,
-			const unsigned int displacement,
-			const KernelType& kernelType,
-			const int nFace,
-			const double coeff[2],
-			InputA& inA,
-			InputB& inB,
-			Output& outA,
-			Output& outB,
-			GaugeField& meta) :
-	length(meta.VolumeCB()), parity(parity), dir(dir),
-	displacement(displacement), kernelType(kernelType), nFace(nFace),
-	inA(inA), inB(inB), outA(outA), outB(outB)
+      StaggeredOprodArg(const unsigned int parity, const unsigned int dir, const unsigned int *ghostOffset,
+          const unsigned int displacement, const OprodKernelType &kernelType, const int nFace, const double coeff[2],
+          InputA &inA, InputB &inB, Output &outA, Output &outB, GaugeField &meta) :
+          length(meta.VolumeCB()),
+          parity(parity),
+          dir(dir),
+          displacement(displacement),
+          kernelType(kernelType),
+          nFace(nFace),
+          inA(inA),
+          inB(inB),
+          outA(outA),
+          outB(outB)
       {
         this->coeff[0] = coeff[0];
         this->coeff[1] = coeff[1];
@@ -327,12 +325,12 @@ namespace quda {
     pushKernelPackT(true);
 
     // first transfer src1
-    cudaDeviceSynchronize();
+    qudaDeviceSynchronize();
 
     MemoryLocation location[2*QUDA_MAX_DIM] = {Device, Device, Device, Device, Device, Device, Device, Device};
-    a.pack(nFace, 1-parity, dag, Nstream-1, location);
+    a.pack(nFace, 1-parity, dag, Nstream-1, location, Device);
 
-    cudaDeviceSynchronize();
+    qudaDeviceSynchronize();
 
     for(int i=3; i>=0; i--){
       if(commDimPartitioned(i)){
@@ -341,7 +339,7 @@ namespace quda {
       } // commDim(i)
     } // i=3,..,0
 
-    cudaDeviceSynchronize(); comm_barrier();
+    qudaDeviceSynchronize(); comm_barrier();
 
     for (int i=3; i>=0; i--) {
       if(commDimPartitioned(i)) {
@@ -356,7 +354,7 @@ namespace quda {
       }
     }
 
-    cudaDeviceSynchronize();
+    qudaDeviceSynchronize();
     popKernelPackT(); // restore packing state
 
     a.bufferIndex = (1 - a.bufferIndex);
@@ -424,15 +422,15 @@ namespace quda {
     inB.allocateGhostBuffer(nFace);
 
     if (inEven.Precision() == QUDA_DOUBLE_PRECISION) {
-      Spinor<double2, double2, 3, 0, 0> spinorA(inA, nFace);
-      Spinor<double2, double2, 3, 0, 1> spinorB(inB, nFace);
+      Spinor<double2, double2, 3, 0> spinorA(inA, nFace);
+      Spinor<double2, double2, 3, 0> spinorB(inB, nFace);
       exchangeGhost(nFace,static_cast<cudaColorSpinorField&>(inB), parity, 0);
 
       computeStaggeredOprodCuda<double>(gauge::FloatNOrder<double, 18, 2, 18>(outA), gauge::FloatNOrder<double, 18, 2, 18>(outB),
 					outA, outB, spinorA, spinorB, inB, parity, inB.GhostFace(), coeff, nFace);
     } else if (inEven.Precision() == QUDA_SINGLE_PRECISION) {
-      Spinor<float2, float2, 3, 0, 0> spinorA(inA, nFace);
-      Spinor<float2, float2, 3, 0, 1> spinorB(inB, nFace);
+      Spinor<float2, float2, 3, 0> spinorA(inA, nFace);
+      Spinor<float2, float2, 3, 0> spinorB(inB, nFace);
       exchangeGhost(nFace,static_cast<cudaColorSpinorField&>(inB), parity, 0);
 
       computeStaggeredOprodCuda<float>(gauge::FloatNOrder<float, 18, 2, 18>(outA), gauge::FloatNOrder<float, 18, 2, 18>(outB),
