@@ -1807,7 +1807,7 @@ namespace quda {
       //-C.K. Added this function for compatibility with Contraction Code
       void init(const GaugeField &u, Float *gauge_=0, Float **ghost_=0, bool override=false)
       {
-        reconstruct = Reconstruct<reconLenParam,Float>(u);
+        reconstruct = Reconstruct<reconLenParam, Float, ghostExchange_, stag_phase>(u);
         gauge = gauge_ ? gauge_ : (Float*)u.Gauge_p();
         offset = u.Bytes()/(2*sizeof(Float));
         ghostExchange = u.GhostExchange();

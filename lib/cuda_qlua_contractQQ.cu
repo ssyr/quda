@@ -6,6 +6,7 @@
  */
 
 #include <qlua_contract.h>
+#include <tune_quda.h>
 
 namespace quda {
   

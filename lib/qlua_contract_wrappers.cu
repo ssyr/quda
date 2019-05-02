@@ -7,6 +7,7 @@
 #include <qlua_contract_kernels.cuh>
 #include <qlua_contract_shifts.cuh>
 #include <qlua_util_kernels.cuh>
+#include <tune_quda.h>
 
 namespace quda {  
 
