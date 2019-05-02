@@ -164,7 +164,7 @@ void setGaugeParam(QudaGaugeParam &gauge_param) {
   gauge_param.anisotropy = anisotropy;
   gauge_param.type = QUDA_WILSON_LINKS;
   gauge_param.gauge_order = QUDA_QDP_GAUGE_ORDER;
-  gauge_param.t_boundary = QUDA_PERIODIC_T;
+  gauge_param.t_boundary = QUDA_ANTI_PERIODIC_T;
   
   gauge_param.cpu_prec = cpu_prec;
 
@@ -441,7 +441,7 @@ void setInvertParam(QudaInvertParam &inv_param) {
   inv_param.cuda_prec_precondition = cuda_prec_precondition;
   inv_param.preserve_source = QUDA_PRESERVE_SOURCE_NO;
   inv_param.gamma_basis = QUDA_DEGRAND_ROSSI_GAMMA_BASIS;
-  inv_param.dirac_order = QUDA_DIRAC_ORDER;
+  inv_param.dirac_order = QUDA_QDP_DIRAC_ORDER;
 
   if (dslash_type == QUDA_CLOVER_WILSON_DSLASH || dslash_type == QUDA_TWISTED_CLOVER_DSLASH) {
     inv_param.clover_cpu_prec = cpu_prec;
@@ -676,6 +676,8 @@ int main(int argc, char **argv)
   void *mg_preconditioner = newMultigridQuda(&mg_param);
   inv_param.preconditioner = mg_preconditioner;
 
+  printfQuda("Creating a Unity source!\n");
+
   for (int i=0; i<Nsrc; i++) {
     // create a point source at 0 (in each subvolume...  FIXME)
     memset(spinorIn, 0, inv_param.Ls*V*spinorSiteSize*sSize);
@@ -684,10 +686,10 @@ int main(int argc, char **argv)
 
     if (inv_param.cpu_prec == QUDA_SINGLE_PRECISION) {
       //((float*)spinorIn)[i] = 1.0;
-      for (int i=0; i<inv_param.Ls*V*spinorSiteSize; i++) ((float*)spinorIn)[i] = rand() / (float)RAND_MAX;
+      for (int i=0; i<inv_param.Ls*V*spinorSiteSize; i++) ((float*)spinorIn)[i] = 1.0; // ((float*)spinorIn)[i] = rand() / (float)RAND_MAX;
     } else {
       //((double*)spinorIn)[i] = 1.0;
-      for (int i=0; i<inv_param.Ls*V*spinorSiteSize; i++) ((double*)spinorIn)[i] = rand() / (double)RAND_MAX;
+      for (int i=0; i<inv_param.Ls*V*spinorSiteSize; i++) ((double*)spinorIn)[i] = 1.0; //((double*)spinorIn)[i] = rand() / (double)RAND_MAX;
     }
 
     invertQuda(spinorOut, spinorIn, &inv_param);
