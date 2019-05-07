@@ -780,19 +780,22 @@ int momProjCorr_uLocal(XTRN_CPLX *corrOut, const complex<QUDA_REAL> *corrQuda_de
   //-- Create space-communicator
   int space_rank, space_size;
   MPI_Comm COMM_SPACE;
-  MPI_Comm_split(MPI_COMM_WORLD, comm_coord(3), comm_rank(), &COMM_SPACE);
+  int tCoord = comm_coord(3);
+  int cRank = comm_rank();
+  MPI_Comm_split(MPI_COMM_WORLD, tCoord, cRank, &COMM_SPACE);
   MPI_Comm_rank(COMM_SPACE,&space_rank);
   MPI_Comm_size(COMM_SPACE,&space_size);
 
   //-- Create time communicator
   int time_rank, time_size;
+  int time_tag = 100;
   MPI_Comm COMM_TIME;
   int time_color = comm_rank();   //-- Determine the "color" which distinguishes the "time" processes from the rest
   if( (comm_coord(0) == 0) &&
       (comm_coord(1) == 0) &&
-      (comm_coord(2) == 0) ) time_color = -1;
+      (comm_coord(2) == 0) ) time_color = (time_tag>comm_size()) ? time_tag : time_tag+comm_size();
 
-  MPI_Comm_split(MPI_COMM_WORLD, time_color, comm_coord(3), &COMM_TIME);
+  MPI_Comm_split(MPI_COMM_WORLD, time_color, tCoord, &COMM_TIME);
   MPI_Comm_rank(COMM_TIME,&time_rank);
   MPI_Comm_size(COMM_TIME,&time_size);
 
@@ -1002,8 +1005,7 @@ int string_prefix(const char *p, const char *str){
 int momProjCorr_TMD_QPDF(QuarkTMD_state *qcs, XTRN_CPLX *corrOut){
 
   int status = 0;
-
-  const char *func_name = "momentumProjectTMDCorr_Quda";
+  double t1,t2;
 
   int Ndata   = qcs->paramAPI.mpParam.Ndata;
   int locT    = qcs->paramAPI.mpParam.locT;
@@ -1028,32 +1030,89 @@ int momProjCorr_TMD_QPDF(QuarkTMD_state *qcs, XTRN_CPLX *corrOut){
    * corrInp_dev=(V3,Ndata*locT) is the input correlation matrix
    * corrOut_dev=(Nmoms,Ndata*locT) is the output matrix in column-major format
    */
+  t1 = MPI_Wtime();
   if(typeid(QUDA_REAL) == typeid(double)){
-    if(getVerbosity() >= QUDA_VERBOSE) printfQuda("%s: Performing momentum projection in double precision.\n", func_name);
+    if(getVerbosity() >= QUDA_VERBOSE) printfQuda("%s: Performing momentum projection in double precision.\n", __func__);
     stat = cublasZgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, Nmoms, Ndata*locT, V3,
 		       &al, qcs->phaseMatrix_dev, V3,
 		       qcs->corrInp_dev , V3, &be,
 		       qcs->corrOut_dev, Nmoms);
   }
   else if(typeid(QUDA_REAL) == typeid(float)){
-    if(getVerbosity() >= QUDA_VERBOSE) printfQuda("%s: Performing momentum projection in single precision.\n", func_name);
+    if(getVerbosity() >= QUDA_VERBOSE) printfQuda("%s: Performing momentum projection in single precision.\n", __func__);
     stat = cublasCgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, Nmoms, Ndata*locT, V3,
 		       (cuComplex*)&al, (cuComplex*)qcs->phaseMatrix_dev, V3,
 		       (cuComplex*)qcs->corrInp_dev , V3, (cuComplex*)&be,
 		       (cuComplex*)qcs->corrOut_dev, Nmoms);
   }
-  else errorQuda("%s: Precision not supported!\n", func_name);
+  else errorQuda("%s: Precision not supported!\n", __func__);
   
   if(stat != CUBLAS_STATUS_SUCCESS)
-    errorQuda("%s: Momentum projection failed!\n", func_name);
+    errorQuda("%s: Momentum projection failed!\n", __func__);
   
   //-- extract the result from GPU to CPU  
   stat = cublasGetMatrix(Nmoms, Ndata*locT, sizeof(complex<QUDA_REAL>), qcs->corrOut_dev, Nmoms, qcs->corrOut_host, Nmoms);
   if(stat != CUBLAS_STATUS_SUCCESS)
-    errorQuda("%s: corrOut data copy to CPU failed!\n", func_name);
+    errorQuda("%s: corrOut data copy to CPU failed!\n", __func__);
+
+  t2 = MPI_Wtime();
+  printfQuda("TIMING - %s: Momentum projection done in %f sec.\n", __func__, t2-t1);
   /* --------------------------------------------------------------------------------------- */
 
+  //-- Perform reduction
+  MPI_Datatype dataTypeMPI;
+  if     ( typeid(QUDA_REAL) == typeid(float) ) dataTypeMPI = MPI_COMPLEX;
+  else if( typeid(QUDA_REAL) == typeid(double)) dataTypeMPI = MPI_DOUBLE_COMPLEX;
 
+#if 0
+  printfQuda("%s: Reduction according to alternative implementation\n", __func__);
+  fflush(stdout);
+
+  Topology *topo = comm_default_topology();
+
+  t1 = MPI_Wtime();
+  for(int tdim=0;tdim<comm_dim(3);tdim++){
+    if(comm_coord(3)!=tdim) break;
+
+    int dst_coords[4] = {0,0,0,tdim}; //- Coordinates of the destination process for each time partition
+    int dst_proc = comm_rank_from_coords(topo, dst_coords); //- The destination process id    
+    MPI_Reduce(qcs->corrOut_host, qcs->corrOut_glob, Nmoms*Ndata*locT, dataTypeMPI, MPI_SUM, dst_proc, MPI_COMM_WORLD);  
+  }
+  printfQuda("%s: MPI_Reduce completed!\n", __func__);
+  fflush(stdout);
+
+  int root_proc = 0;
+  if( (comm_coord(0) == 0) &&
+      (comm_coord(1) == 0) &&
+      (comm_coord(2) == 0) ){
+
+    int tproc_coords[4] = {0,0,0,comm_coord(3)}; 
+    int tproc_rank = comm_rank_from_coords(topo, tproc_coords); //- Rank IDs of the processes that have coordinates (0,0,0,tc)
+    printf("Process %d: tproc_coords = (%d,%d,%d,%d) , tproc_rank = %d\n", comm_rank(), tproc_coords[0], tproc_coords[1], tproc_coords[2], tproc_coords[3], tproc_rank);
+
+    int ctag = 99;
+    if(comm_coord(3) != 0){
+      printf("Process %d - tproc_coords = (%d,%d,%d,%d) , tproc_rank = %d: Will send to process 0\n", comm_rank(), tproc_coords[0], tproc_coords[1], tproc_coords[2], tproc_coords[3], tproc_rank);
+      MPI_Send(qcs->corrOut_glob, Nmoms*Ndata*locT, dataTypeMPI, root_proc, ctag, MPI_COMM_WORLD);
+    }
+    else{
+      if(comm_rank() != root_proc) errorQuda("%s: Root process is not 0th rank!\n", __func__);
+      printf("Process %d: Got into comm_coord(3)!=0 \n", comm_rank());
+      memcpy(qcs->corrOut_proj, qcs->corrOut_glob, sizeof(complex<QUDA_REAL>)*Nmoms*Ndata*locT); //- Copy the root's "global" data to the beginning of "projected" buffer
+      for(int p=1;p<comm_dim(3);p++){
+	int recv_proc_crd[4] = {0,0,0,p};
+	recv_rank = comm_rank_from_coords(topo, recv_proc_crd);
+	printf("Process %d: Will receive from rank = %d\n", comm_rank(), recv_rank)
+  	MPI_Recv(&(qcs->corrOut_proj[Nmoms*Ndata*locT*p]), Nmoms*Ndata*locT, dataTypeMPI, recv_rank, ctag, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      }
+    }//-else
+
+  }//-if comm_coord(0,1,2) == 0
+  
+  MPI_Bcast(qcs->corrOut_proj, Nmoms*Ndata*totT, dataTypeMPI, 0, MPI_COMM_WORLD);
+#else
+  printfQuda("%s: Reduction according to standard implementation\n", __func__);
+  fflush(stdout);
 
   //-- Perform reduction over all processes
   /* Create separate communicators
@@ -1072,39 +1131,38 @@ int momProjCorr_TMD_QPDF(QuarkTMD_state *qcs, XTRN_CPLX *corrOut){
    */
 
   //-- Create space-communicator
+  t1 = MPI_Wtime();
+  
   int space_rank, space_size;
   MPI_Comm COMM_SPACE;
-  MPI_Comm_split(MPI_COMM_WORLD, comm_coord(3), comm_rank(), &COMM_SPACE);
+  int tCoord = comm_coord(3);
+  int cRank = comm_rank();
+  MPI_Comm_split(MPI_COMM_WORLD, tCoord, cRank, &COMM_SPACE);
   MPI_Comm_rank(COMM_SPACE,&space_rank);
   MPI_Comm_size(COMM_SPACE,&space_size);
 
   //-- Create time communicator
   int time_rank, time_size;
+  int time_tag = 100;
   MPI_Comm COMM_TIME;
   int time_color = comm_rank();   //-- Determine the "color" which distinguishes the "time" processes from the rest
   if( (comm_coord(0) == 0) &&
       (comm_coord(1) == 0) &&
-      (comm_coord(2) == 0) ) time_color = -1;
+      (comm_coord(2) == 0) ) time_color = (time_tag>comm_size()) ? time_tag : time_tag+comm_size();
 
-  MPI_Comm_split(MPI_COMM_WORLD, time_color, comm_coord(3), &COMM_TIME);
+  MPI_Comm_split(MPI_COMM_WORLD, time_color, tCoord, &COMM_TIME);
   MPI_Comm_rank(COMM_TIME,&time_rank);
   MPI_Comm_size(COMM_TIME,&time_size);
-
-  
-  MPI_Datatype dataTypeMPI;
-  if     ( typeid(QUDA_REAL) == typeid(float) ) dataTypeMPI = MPI_COMPLEX;
-  else if( typeid(QUDA_REAL) == typeid(double)) dataTypeMPI = MPI_DOUBLE_COMPLEX;
-
   
   MPI_Reduce(qcs->corrOut_host, qcs->corrOut_glob, Nmoms*Ndata*locT, dataTypeMPI, MPI_SUM, 0, COMM_SPACE);  
-
   
   MPI_Gather(qcs->corrOut_glob, Nmoms*Ndata*locT, dataTypeMPI,
 	     qcs->corrOut_proj, Nmoms*Ndata*locT, dataTypeMPI,
 	     0, COMM_TIME);
   
   MPI_Bcast(qcs->corrOut_proj, Nmoms*Ndata*totT, dataTypeMPI, 0, MPI_COMM_WORLD);
-  
+#endif  
+
   /*
    * Now a transpose of the corrOut_proj is required such that it follows the Qlua-C
    * convention, T-inside-Nmoms-inside-Ndata. A shift of the source-time to zero is also required,
@@ -1124,9 +1182,14 @@ int momProjCorr_TMD_QPDF(QuarkTMD_state *qcs, XTRN_CPLX *corrOut){
     }
   }
 
-  //-- cleanup & return  
+  t2 = MPI_Wtime();
+  printfQuda("TIMING - %s: Reduction done in %f sec.\n", __func__, t2-t1);
+
+  //-- cleanup & return
+#if 1
   MPI_Comm_free(&COMM_SPACE);
   MPI_Comm_free(&COMM_TIME);
+#endif
 
   cublasDestroy(handle);
   
