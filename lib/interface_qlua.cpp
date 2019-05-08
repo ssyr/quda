@@ -1064,56 +1064,6 @@ int momProjCorr_TMD_QPDF(QuarkTMD_state *qcs, XTRN_CPLX *corrOut){
   if     ( typeid(QUDA_REAL) == typeid(float) ) dataTypeMPI = MPI_COMPLEX;
   else if( typeid(QUDA_REAL) == typeid(double)) dataTypeMPI = MPI_DOUBLE_COMPLEX;
 
-#if 0
-  printfQuda("%s: Reduction according to alternative implementation\n", __func__);
-  fflush(stdout);
-
-  Topology *topo = comm_default_topology();
-
-  t1 = MPI_Wtime();
-  for(int tdim=0;tdim<comm_dim(3);tdim++){
-    if(comm_coord(3)!=tdim) break;
-
-    int dst_coords[4] = {0,0,0,tdim}; //- Coordinates of the destination process for each time partition
-    int dst_proc = comm_rank_from_coords(topo, dst_coords); //- The destination process id    
-    MPI_Reduce(qcs->corrOut_host, qcs->corrOut_glob, Nmoms*Ndata*locT, dataTypeMPI, MPI_SUM, dst_proc, MPI_COMM_WORLD);  
-  }
-  printfQuda("%s: MPI_Reduce completed!\n", __func__);
-  fflush(stdout);
-
-  int root_proc = 0;
-  if( (comm_coord(0) == 0) &&
-      (comm_coord(1) == 0) &&
-      (comm_coord(2) == 0) ){
-
-    int tproc_coords[4] = {0,0,0,comm_coord(3)}; 
-    int tproc_rank = comm_rank_from_coords(topo, tproc_coords); //- Rank IDs of the processes that have coordinates (0,0,0,tc)
-    printf("Process %d: tproc_coords = (%d,%d,%d,%d) , tproc_rank = %d\n", comm_rank(), tproc_coords[0], tproc_coords[1], tproc_coords[2], tproc_coords[3], tproc_rank);
-
-    int ctag = 99;
-    if(comm_coord(3) != 0){
-      printf("Process %d - tproc_coords = (%d,%d,%d,%d) , tproc_rank = %d: Will send to process 0\n", comm_rank(), tproc_coords[0], tproc_coords[1], tproc_coords[2], tproc_coords[3], tproc_rank);
-      MPI_Send(qcs->corrOut_glob, Nmoms*Ndata*locT, dataTypeMPI, root_proc, ctag, MPI_COMM_WORLD);
-    }
-    else{
-      if(comm_rank() != root_proc) errorQuda("%s: Root process is not 0th rank!\n", __func__);
-      printf("Process %d: Got into comm_coord(3)!=0 \n", comm_rank());
-      memcpy(qcs->corrOut_proj, qcs->corrOut_glob, sizeof(complex<QUDA_REAL>)*Nmoms*Ndata*locT); //- Copy the root's "global" data to the beginning of "projected" buffer
-      for(int p=1;p<comm_dim(3);p++){
-	int recv_proc_crd[4] = {0,0,0,p};
-	recv_rank = comm_rank_from_coords(topo, recv_proc_crd);
-	printf("Process %d: Will receive from rank = %d\n", comm_rank(), recv_rank)
-  	MPI_Recv(&(qcs->corrOut_proj[Nmoms*Ndata*locT*p]), Nmoms*Ndata*locT, dataTypeMPI, recv_rank, ctag, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-      }
-    }//-else
-
-  }//-if comm_coord(0,1,2) == 0
-  
-  MPI_Bcast(qcs->corrOut_proj, Nmoms*Ndata*totT, dataTypeMPI, 0, MPI_COMM_WORLD);
-#else
-  printfQuda("%s: Reduction according to standard implementation\n", __func__);
-  fflush(stdout);
-
   //-- Perform reduction over all processes
   /* Create separate communicators
    * All processes with the same comm_coord(3) belong to COMM_SPACE communicator.
@@ -1161,7 +1111,6 @@ int momProjCorr_TMD_QPDF(QuarkTMD_state *qcs, XTRN_CPLX *corrOut){
 	     0, COMM_TIME);
   
   MPI_Bcast(qcs->corrOut_proj, Nmoms*Ndata*totT, dataTypeMPI, 0, MPI_COMM_WORLD);
-#endif  
 
   /*
    * Now a transpose of the corrOut_proj is required such that it follows the Qlua-C
@@ -1186,10 +1135,8 @@ int momProjCorr_TMD_QPDF(QuarkTMD_state *qcs, XTRN_CPLX *corrOut){
   printfQuda("TIMING - %s: Reduction done in %f sec.\n", __func__, t2-t1);
 
   //-- cleanup & return
-#if 1
   MPI_Comm_free(&COMM_SPACE);
   MPI_Comm_free(&COMM_TIME);
-#endif
 
   cublasDestroy(handle);
   
