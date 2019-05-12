@@ -18,6 +18,12 @@
 #include <mpi.h>
 #endif
 
+#ifdef HAVE_LIME
+extern "C" {
+#include <lime.h>
+}
+#endif
+
 #include <qio_field.h>
 
 #define MAX(a,b) ((a)>(b)?(a):(b))
@@ -56,6 +62,8 @@ extern int gcrNkrylov; // number of inner iterations for GCR, or l for BiCGstab-
 extern int pipeline; // length of pipeline for fused operations in GCR or BiCGstab-l
 extern int nvec[];
 extern int mg_levels;
+
+extern bool compute_plaq;
 
 extern bool generate_nullspace;
 extern bool generate_all_levels;
@@ -623,13 +631,20 @@ int main(int argc, char **argv)
   }
 
   if (strcmp(latfile,"")) {  // load in the command line supplied gauge field
+#if defined(HAVE_LIME) && defined(MPI_COMMS)
+    printfQuda("### Reading Gauge field from LIME\n");
+    readLimeGauge(gauge, latfile, &gauge_param, &inv_param, gridsize_from_cmdline);
+    applyBoundaryCondition(gauge, V/2 ,&gauge_param);
+#else
+    printfQuda("### Reading Gauge field from QMP-QIO\n");
     read_gauge_field(latfile, gauge, gauge_param.cpu_prec, gauge_param.X, argc, argv);
     construct_gauge_field(gauge, 2, gauge_param.cpu_prec, &gauge_param);
+#endif
   } else { // else generate a random SU(3) field
     //generate a random SU(3) field
-    //construct_gauge_field(gauge, 1, gauge_param.cpu_prec, &gauge_param);
+    construct_gauge_field(gauge, 1, gauge_param.cpu_prec, &gauge_param);
     //generate a unit SU(3) field
-    construct_gauge_field(gauge, 0, gauge_param.cpu_prec, &gauge_param);
+    //construct_gauge_field(gauge, 0, gauge_param.cpu_prec, &gauge_param);
   }
 
   if (dslash_type == QUDA_CLOVER_WILSON_DSLASH || dslash_type == QUDA_TWISTED_CLOVER_DSLASH) {
@@ -662,9 +677,14 @@ int main(int argc, char **argv)
   // load the gauge field
   loadGaugeQuda((void*)gauge, &gauge_param);
 
-  double plaq[3];
-  plaqQuda(plaq);
-  printfQuda("Computed plaquette is %e (spatial = %e, temporal = %e)\n", plaq[0], plaq[1], plaq[2]);
+  if(compute_plaq){
+    printfQuda("Will compute plaquette!\n");
+    double plaq[3];
+    plaqQuda(plaq);
+    printfQuda("Computed plaquette is %e (spatial = %e, temporal = %e)\n", plaq[0], plaq[1], plaq[2]);
+  }
+  else printfQuda("Will NOT compute plaquette!\n");
+
 
   // this line ensure that if we need to construct the clover inverse (in either the smoother or the solver) we do so
   if (mg_param.smoother_solve_type[0] == QUDA_DIRECT_PC_SOLVE || solve_type == QUDA_DIRECT_PC_SOLVE) inv_param.solve_type = QUDA_DIRECT_PC_SOLVE;

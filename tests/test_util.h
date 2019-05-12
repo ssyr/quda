@@ -98,6 +98,11 @@
   void stopwatchStart();
   double stopwatchReadSeconds();
 
+#ifdef HAVE_LIME
+void readLimeGauge(void **gauge, char *fname, QudaGaugeParam *param, QudaInvertParam *inv_param, int gridSize[4]);
+void applyBoundaryCondition(void **gauge, int Vh ,QudaGaugeParam *gauge_param);
+#endif
+
 #ifdef __cplusplus
 //}
 #endif

@@ -92,6 +92,7 @@ set(QUDA_CONTRACT OFF CACHE BOOL "build code for bilinear contraction")
 # Dynamic inversion saves memory but decreases the flops
 set(QUDA_DYNAMIC_CLOVER OFF CACHE BOOL "Dynamically invert the clover term for twisted-clover")
 set(QUDA_QIO OFF CACHE BOOL "build QIO code for binary I/O")
+set(QUDA_LIME OFF CACHE BOOL "build LIME code for binary I/O")
 
 # Multi-GPU options
 set(QUDA_QMP OFF CACHE BOOL "set to 'yes' to build the QMP multi-GPU code")
@@ -366,6 +367,15 @@ if(QUDA_QIO)
   FIND_LIBRARY(QIO_LIB qio ${QUDA_QIOHOME}/lib/)
   FIND_LIBRARY(LIME_LIB lime ${QUDA_LIMEHOME}/lib/)
   include_directories(SYSTEM ${QUDA_QIOHOME}/include)
+  include_directories(SYSTEM ${QUDA_LIMEHOME}/include)
+endif()
+
+if(QUDA_LIME)
+  if("${QUDA_LIMEHOME}" STREQUAL "")
+    message( FATAL_ERROR "QUDA_LIMEHOME must be defined when QUDA_LIME is set" )
+  endif()
+  add_definitions(-DHAVE_LIME)
+  FIND_LIBRARY(LIME_LIB lime ${QUDA_LIMEHOME}/lib/)
   include_directories(SYSTEM ${QUDA_LIMEHOME}/include)
 endif()
 
