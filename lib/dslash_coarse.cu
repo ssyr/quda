@@ -531,7 +531,7 @@ namespace quda {
 
       if (dslash && comm_partitioned() && comms) {
 	const int nFace = 1;
-	inA.exchangeGhost((QudaParity)(1-parity), nFace, dagger, pack_destination, halo_location, gdr_send, gdr_recv, halo_precision);
+	inA.exchangeGhost((QudaParity)(inA.SiteSubset() == QUDA_PARITY_SITE_SUBSET ? (1-parity) : 0), nFace, dagger, pack_destination, halo_location, gdr_send, gdr_recv, halo_precision);
       }
 
       if (dslash::aux_worker) dslash::aux_worker->apply(0);
@@ -667,15 +667,6 @@ namespace quda {
 	dslash_init = true;
       }
 
-      // before we do policy tuning we must ensure the kernel
-      // constituents have been tuned since we can't do nested tuning
-      if (getTuning() && getTuneCache().find(tuneKey()) == getTuneCache().end()) {
-	disableProfileCount();
-	for (auto &i : policies) if(i!= DslashCoarsePolicy::DSLASH_COARSE_POLICY_DISABLED) dslash(i);
-	enableProfileCount();
-	setPolicyTuning(true);
-      }
-
       strcpy(aux,"policy,");
       if (dslash.dslash) strcat(aux,"dslash");
       strcat(aux, dslash.clover ? "clover," : ",");
@@ -696,6 +687,15 @@ namespace quda {
       int comm_sum = 4;
       if (dslash.commDim) for (int i=0; i<4; i++) comm_sum -= (1-dslash.commDim[i]);
       strcat(aux, comm_sum ? ",full" : ",interior");
+
+      // before we do policy tuning we must ensure the kernel
+      // constituents have been tuned since we can't do nested tuning
+      if (getTuning() && getTuneCache().find(tuneKey()) == getTuneCache().end()) {
+	disableProfileCount();
+	for (auto &i : policies) if(i!= DslashCoarsePolicy::DSLASH_COARSE_POLICY_DISABLED) dslash(i);
+	enableProfileCount();
+	setPolicyTuning(true);
+      }
    }
 
    virtual ~DslashCoarsePolicyTune() { setPolicyTuning(false); }
