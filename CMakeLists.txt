@@ -16,25 +16,32 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 
 find_package(Git)
-SET(DEFBUILD "RELEASE")
-IF(GIT_FOUND)
-execute_process(COMMAND ${GIT_EXECUTABLE} show WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} RESULT_VARIABLE IS_GIT_REPOSIITORY OUTPUT_QUIET ERROR_QUIET)
-  IF(${IS_GIT_REPOSIITORY} EQUAL 0)
-    execute_process(COMMAND ${GIT_EXECUTABLE} describe --abbrev=0 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE GITTAG OUTPUT_STRIP_TRAILING_WHITESPACE)
-# we use git rev-list and pipe that through wc here. Newer git versions support --count as option to rev-list but that might not always be available
-    execute_process(COMMAND ${GIT_EXECUTABLE} rev-list ${GITTAG}..HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND wc -l OUTPUT_VARIABLE GITCOUNT OUTPUT_STRIP_TRAILING_WHITESPACE)
-    execute_process(COMMAND ${GIT_EXECUTABLE}  describe --long --dirty WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE GITVERSION OUTPUT_STRIP_TRAILING_WHITESPACE)
-    IF(GITCOUNT EQUAL 0)
-      SET(DEFBUILD "RELEASE")
-    ELSE()
-      SET(DEFBUILD "DEVEL")
-    ENDIF()
-  ENDIF()
-ENDIF(GIT_FOUND)
 
-set(VALID_BUILD_TYPES DEVEL RELEASE STRICT DEBUG HOSTDEBUG DEVICEDEBUG )
+# by default we will build RELASE
+if(DEFINED ENV{QUDA_BUILD_TYPE})
+  set(DEFBUILD $ENV{QUDA_BUILD_TYPE})
+else()
+  set(DEFBUILD "RELEASE")
+endif()
+
+# IF(GIT_FOUND)
+# execute_process(COMMAND ${GIT_EXECUTABLE} show WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} RESULT_VARIABLE IS_GIT_REPOSIITORY OUTPUT_QUIET ERROR_QUIET)
+#   IF(${IS_GIT_REPOSIITORY} EQUAL 0)
+#     execute_process(COMMAND ${GIT_EXECUTABLE} describe --abbrev=0 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE GITTAG OUTPUT_STRIP_TRAILING_WHITESPACE)
+# # we use git rev-list and pipe that through wc here. Newer git versions support --count as option to rev-list but that might not always be available
+#     execute_process(COMMAND ${GIT_EXECUTABLE} rev-list ${GITTAG}..HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND wc -l OUTPUT_VARIABLE GITCOUNT OUTPUT_STRIP_TRAILING_WHITESPACE)
+#     execute_process(COMMAND ${GIT_EXECUTABLE}  describe --long --dirty WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE GITVERSION OUTPUT_STRIP_TRAILING_WHITESPACE)
+#     IF(GITCOUNT EQUAL 0)
+#       SET(DEFBUILD "RELEASE")
+#     ELSE()
+#       SET(DEFBUILD "DEVEL")
+#     ENDIF()
+#   ENDIF()
+# ENDIF(GIT_FOUND)
+
+set(VALID_BUILD_TYPES DEVEL RELEASE STRICT DEBUG HOSTDEBUG DEVICEDEBUG SANITIZE)
 SET(CMAKE_BUILD_TYPE "${DEFBUILD}" CACHE STRING  "Choose the type of build, options are: ${VALID_BUILD_TYPES}")
-set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS DEVEL RELEASE STRICT DEBUG HOSTDEBUG DEVICEDEBUG)
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS DEVEL RELEASE STRICT DEBUG HOSTDEBUG DEVICEDEBUG SANITIZE)
 
 string(TOUPPER ${CMAKE_BUILD_TYPE} CHECK_BUILD_TYPE)
 LIST(FIND VALID_BUILD_TYPES ${CHECK_BUILD_TYPE} BUILD_TYPE_VALID)
@@ -89,9 +96,11 @@ set(QUDA_FORCE_HISQ OFF CACHE BOOL "build code for hisq fermion force")
 set(QUDA_GAUGE_TOOLS OFF CACHE BOOL "build auxiliary gauge-field tools")
 set(QUDA_GAUGE_ALG OFF CACHE BOOL "build gauge-fixing and pure-gauge algorithms")
 set(QUDA_CONTRACT OFF CACHE BOOL "build code for bilinear contraction")
+set(QUDA_COVDEV OFF CACHE BOOL "build code for covariant derivative")
 # Dynamic inversion saves memory but decreases the flops
 set(QUDA_DYNAMIC_CLOVER OFF CACHE BOOL "Dynamically invert the clover term for twisted-clover")
 set(QUDA_QIO OFF CACHE BOOL "build QIO code for binary I/O")
+set(QUDA_LIME OFF CACHE BOOL "build LIME code for binary I/O")
 
 # Multi-GPU options
 set(QUDA_QMP OFF CACHE BOOL "set to 'yes' to build the QMP multi-GPU code")
@@ -128,7 +137,12 @@ set(QUDA_MAGMA_LIBS "" CACHE STRING "additional linker flags required to link ag
 # that ususally should not be changed by users
 #######################################################################
 set(QUDA_BUILD_ALL_TESTS ON CACHE BOOL "build tests by default")
-set(QUDA_BUILD_SHAREDLIB OFF CACHE BOOL "build quda as a shared lib")
+if(DEFINED ENV{QUDA_BUILD_SHAREDLIB})
+  set(DEFSHARED $ENV{QUDA_BUILD_SHAREDLIB})
+else()
+  set(DEFSHARED "OFF")
+endif()
+set(QUDA_BUILD_SHAREDLIB ${DEFSHARED} CACHE BOOL "build quda as a shared lib")
 set(QUDA_PROPAGATE_CXX_FLAGS ON CACHE BOOL "propagate CXX_FLAGS to CUDA host compiler (for cmake >= 3.8)")
 set(QUDA_LEGACY_DSLASH OFF CACHE BOOL "enable legacy dslash kernels?")
 set(QUDA_TEX ON CACHE BOOL "enable texture reads?")
@@ -260,7 +274,7 @@ endif()
 
 set(CMAKE_CXX_STANDARD ${QUDA_CXX_STANDARD})
 #define CXX FLAGS
-set(CMAKE_CXX_FLAGS_DEVEL  "${OpenMP_CXX_FLAGS} -O3 -Wall ${CLANG_FORCE_COLOR}" CACHE STRING
+set(CMAKE_CXX_FLAGS_DEVEL  "${OpenMP_CXX_FLAGS} -g -O3 -Wall ${CLANG_FORCE_COLOR}" CACHE STRING
 "Flags used by the C++ compiler during regular development builds.")
 set(CMAKE_CXX_FLAGS_STRICT  "${OpenMP_CXX_FLAGS} -O3 -Wall -Werror ${CLANG_NOERROR}" CACHE STRING
 "Flags used by the C++ compiler during strict jenkins builds.")
@@ -272,13 +286,15 @@ set(CMAKE_CXX_FLAGS_DEVICEDEBUG "${OpenMP_CXX_FLAGS} -Wall -Wno-unknown-pragmas 
     "Flags used by the C++ compiler during device-debug builds.")
 set(CMAKE_CXX_FLAGS_DEBUG "${OpenMP_CXX_FLAGS} -Wall -Wno-unknown-pragmas -g -fno-inline -DHOST_DEBUG ${CLANG_FORCE_COLOR}" CACHE STRING
     "Flags used by the C++ compiler during full (host+device) debug builds.")
+set(CMAKE_CXX_FLAGS_SANITIZE "${OpenMP_CXX_FLAGS} -Wall -Wno-unknown-pragmas -g -fno-inline -DHOST_DEBUG -fsanitize=address,undefined ${CLANG_FORCE_COLOR}" CACHE STRING
+    "Flags used by the C++ compiler during santizer debug builds.")
 enable_language(CXX)
 
 
 
 
 #define C FLAGS
-set(CMAKE_C_FLAGS_DEVEL "-Wall -O3"  CACHE STRING
+set(CMAKE_C_FLAGS_DEVEL "-Wall -g -O3"  CACHE STRING
     "Flags used by the C compiler during regular development builds.")
 set(CMAKE_C_FLAGS_STRICT "-Wall -O3 -Werror -Wno-error=unused-private-field"  CACHE STRING
     "Flags used by the C compiler during strict jenkins builds.")
@@ -290,11 +306,14 @@ set(CMAKE_C_FLAGS_DEVICEDEBUG "-Wall" CACHE STRING
 "Flags used by the C compiler during device-debug builds.")
 set(CMAKE_C_FLAGS_DEBUG "-Wall -g -fno-inline -DHOST_DEBUG" CACHE STRING
     "Flags used by the C compiler during full (host+device) debug builds.")
-
+set(CMAKE_C_FLAGS_SANITIZE "-Wall -g -fno-inline -DHOST_DEBUG -fsanitize=address,undefined" CACHE STRING
+    "Flags used by the C compiler during sanitizer debug builds.")
 
 enable_language(C)
 # do all the build definitions
 #
+
+set(CMAKE_EXE_LINKER_FLAGS_SANITIZE ${CMAKE_EXE_LINKER_FLAGS_SANITIZE} "-fsanitize=address,undefined")
 
 if(QUDA_MPI OR QUDA_QMP)
   add_definitions(-DMULTI_GPU)
@@ -366,6 +385,15 @@ if(QUDA_QIO)
   FIND_LIBRARY(QIO_LIB qio ${QUDA_QIOHOME}/lib/)
   FIND_LIBRARY(LIME_LIB lime ${QUDA_LIMEHOME}/lib/)
   include_directories(SYSTEM ${QUDA_QIOHOME}/include)
+  include_directories(SYSTEM ${QUDA_LIMEHOME}/include)
+endif()
+
+if(QUDA_LIME)
+  if("${QUDA_LIMEHOME}" STREQUAL "")
+    message( FATAL_ERROR "QUDA_LIMEHOME must be defined when QUDA_LIME is set" )
+  endif()
+  add_definitions(-DHAVE_LIME)
+  FIND_LIBRARY(LIME_LIB lime ${QUDA_LIMEHOME}/lib/)
   include_directories(SYSTEM ${QUDA_LIMEHOME}/include)
 endif()
 
@@ -557,6 +585,10 @@ if(QUDA_CONTRACT)
   add_definitions(-DGPU_CONTRACT)
 endif(QUDA_CONTRACT)
 
+if(QUDA_COVDEV)
+  add_definitions(-DGPU_COVDEV)
+endif(QUDA_COVDEV)
+
 
 #define FORTRAN FLAGS
 set(CMAKE_F_FLAGS -std=c99 CACHE STRING "Fortran Flags")
@@ -585,7 +617,7 @@ endif(QUDA_VERBOSE_BUILD)
 
 ## define CUDA flags when CMake >= 3.8
 set(CMAKE_CUDA_DISABLE_XCOMPILER_WARNINGS "-Wno-unknown-pragmas,-Wno-unused-function,-Wno-unused-local-typedef,-Wno-unused-private-field")
-set(CMAKE_CUDA_FLAGS_DEVEL "${QUDA_NVCC_FLAGS} -lineinfo -O3 -Xcompiler ${CMAKE_CUDA_DISABLE_XCOMPILER_WARNINGS}" CACHE STRING
+set(CMAKE_CUDA_FLAGS_DEVEL "${QUDA_NVCC_FLAGS} -lineinfo -g -O3 -Xcompiler ${CMAKE_CUDA_DISABLE_XCOMPILER_WARNINGS}" CACHE STRING
   "Flags used by the CUDA compiler during regular development builds.")
 set(CMAKE_CUDA_FLAGS_STRICT "${CMAKE_CUDA_FLAGS_DEVEL}" CACHE STRING
   "Flags used by the CUDA compiler during strict jenkins builds.")
@@ -597,6 +629,8 @@ set(CMAKE_CUDA_FLAGS_DEVICEDEBUG "${QUDA_NVCC_FLAGS} -G" CACHE STRING
   "Flags used by the C++ compiler during device-debug builds.")
 set(CMAKE_CUDA_FLAGS_DEBUG "${QUDA_NVCC_FLAGS} -g -DHOST_DEBUG -G" CACHE STRING
   "Flags used by the C++ compiler during full (host+device) debug builds." )
+set(CMAKE_CUDA_FLAGS_SANITIZE "${QUDA_NVCC_FLAGS} -g -lineinfo -DHOST_DEBUG -Xcompiler -fsanitize=address,-fsanitize=undefined" CACHE STRING
+  "Flags used by the C++ compiler during sanitizer debug builds." )
 
 find_package(CUDAWrapper)
 
@@ -651,6 +685,7 @@ mark_as_advanced(CMAKE_CUDA_FLAGS_RELEASE)
 mark_as_advanced(CMAKE_CUDA_FLAGS_DEBUG)
 mark_as_advanced(CMAKE_CUDA_FLAGS_HOSTDEBUG)
 mark_as_advanced(CMAKE_CUDA_FLAGS_DEVICEDEBUG)
+mark_as_advanced(CMAKE_CUDA_FLAGS_SANITIZE)
 
 mark_as_advanced(CMAKE_CXX_FLAGS_DEVEL)
 mark_as_advanced(CMAKE_CXX_FLAGS_STRICT)
@@ -658,6 +693,7 @@ mark_as_advanced(CMAKE_CXX_FLAGS_RELEASE)
 mark_as_advanced(CMAKE_CXX_FLAGS_DEBUG)
 mark_as_advanced(CMAKE_CXX_FLAGS_HOSTDEBUG)
 mark_as_advanced(CMAKE_CXX_FLAGS_DEVICEDEBUG)
+mark_as_advanced(CMAKE_CXX_FLAGS_SANITIZE)
 
 mark_as_advanced(CMAKE_C_FLAGS_DEVEL)
 mark_as_advanced(CMAKE_C_FLAGS_STRICT)
@@ -665,6 +701,7 @@ mark_as_advanced(CMAKE_C_FLAGS_RELEASE)
 mark_as_advanced(CMAKE_C_FLAGS_DEBUG)
 mark_as_advanced(CMAKE_C_FLAGS_HOSTDEBUG)
 mark_as_advanced(CMAKE_C_FLAGS_DEVICEDEBUG)
+mark_as_advanced(CMAKE_C_FLAGS_SANITIZE)
 
 mark_as_advanced(CMAKE_F_FLAGS)
 

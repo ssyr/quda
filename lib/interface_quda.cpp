@@ -644,7 +644,6 @@ void initQudaMemory()
 
   streams = new cudaStream_t[Nstream];
 
-#if (CUDA_VERSION >= 5050)
   int greatestPriority;
   int leastPriority;
   cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority);
@@ -652,11 +651,6 @@ void initQudaMemory()
     cudaStreamCreateWithPriority(&streams[i], cudaStreamDefault, greatestPriority);
   }
   cudaStreamCreateWithPriority(&streams[Nstream-1], cudaStreamDefault, leastPriority);
-#else
-  for (int i=0; i<Nstream; i++) {
-    cudaStreamCreate(&streams[i]);
-  }
-#endif
 
   checkCudaError();
   createDslashEvents();
@@ -1631,6 +1625,7 @@ namespace quda {
       break;
     case QUDA_LAPLACE_DSLASH:
       diracParam.type = pc ? QUDA_GAUGE_LAPLACEPC_DIRAC : QUDA_GAUGE_LAPLACE_DIRAC;
+      diracParam.laplace3D = inv_param->laplace3D;
       break;
     case QUDA_COVDEV_DSLASH:
       diracParam.type = QUDA_GAUGE_COVDEV_DIRAC;
@@ -2940,10 +2935,12 @@ void invertQuda(void *hp_x, void *hp_b, QudaInvertParam *param)
 
   if (getVerbosity() >= QUDA_VERBOSE) {
     double nh_b = blas::norm2(*h_b);
-    double nh_x = blas::norm2(*h_x);
-    double nx = blas::norm2(*x);
     printfQuda("Source: CPU = %g, CUDA copy = %g\n", nh_b, nb);
-    printfQuda("Solution: CPU = %g, CUDA copy = %g\n", nh_x, nx);
+    if (param->use_init_guess == QUDA_USE_INIT_GUESS_YES) {
+      double nh_x = blas::norm2(*h_x);
+      double nx = blas::norm2(*x);
+      printfQuda("Solution: CPU = %g, CUDA copy = %g\n", nh_x, nx);
+    }
   }
 
   // rescale the source and solution vectors to help prevent the onset of underflow

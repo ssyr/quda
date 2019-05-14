@@ -88,6 +88,17 @@ namespace quda {
 
     for (int dir = 0; dir < 2; dir++) { // XLC cannot do multi-dimensional array initialization
       for (int dim = 0; dim < QUDA_MAX_DIM; dim++) {
+
+        for (int b=0; b<2; b++) {
+          my_face_dim_dir_d[b][dim][dir] = nullptr;
+          my_face_dim_dir_hd[b][dim][dir] = nullptr;
+          my_face_dim_dir_h[b][dim][dir] = nullptr;
+
+          from_face_dim_dir_d[b][dim][dir] = nullptr;
+          from_face_dim_dir_hd[b][dim][dir] = nullptr;
+          from_face_dim_dir_h[b][dim][dir] = nullptr;
+        }
+
         mh_recv_fwd[dir][dim] = nullptr;
         mh_recv_back[dir][dim] = nullptr;
         mh_send_fwd[dir][dim] = nullptr;
@@ -228,7 +239,6 @@ namespace quda {
       }
 
       if (ghost_bytes > 0) {
-
         for (int b = 0; b < 2; ++b) {
           // gpu receive buffer (use pinned allocator to avoid this being redirected, e.g., by QDPJIT)
 	  ghost_recv_buffer_d[b] = device_pinned_malloc(ghost_bytes);
@@ -290,6 +300,12 @@ namespace quda {
   void LatticeField::createComms(bool no_comms_fill, bool bidir)
   {
     destroyComms(); // if we are requesting a new number of faces destroy and start over
+
+    // before allocating local comm handles, synchronize since the
+    // comms buffers are static so remove potential for interferring
+    // with any outstanding exchanges to the same buffers
+    qudaDeviceSynchronize();
+    comm_barrier();
 
     // initialize the ghost pinned buffers
     for (int b=0; b<2; b++) {
@@ -418,8 +434,8 @@ namespace quda {
 							  sizeof(ipcRemoteGhostDestHandle[b][1-dir][dim]));
 	  }
 	  // now send
+          cudaIpcMemHandle_t ipcLocalGhostDestHandle;
 	  if (comm_peer2peer_enabled(dir,dim)) {
-	    cudaIpcMemHandle_t ipcLocalGhostDestHandle;
 	    cudaIpcGetMemHandle(&ipcLocalGhostDestHandle, ghost_recv_buffer_d[b]);
 	    sendHandle = comm_declare_send_relative(&ipcLocalGhostDestHandle,
 						    dim, disp,
@@ -476,9 +492,9 @@ namespace quda {
 	  }
 
 	  // now send
+          cudaIpcEventHandle_t ipcLocalEventHandle;
 	  if (comm_peer2peer_enabled(dir,dim)) {
 	    cudaEventCreate(&ipcCopyEvent[b][dir][dim], cudaEventDisableTiming | cudaEventInterprocess);
-	    cudaIpcEventHandle_t ipcLocalEventHandle;
 	    cudaIpcGetEventHandle(&ipcLocalEventHandle, ipcCopyEvent[b][dir][dim]);
 
 	    sendHandle = comm_declare_send_relative(&ipcLocalEventHandle, dim, disp,

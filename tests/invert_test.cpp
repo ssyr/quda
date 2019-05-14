@@ -5,18 +5,13 @@
 #include <string.h>
 
 #include <util_quda.h>
+#include <random_quda.h>
 #include <test_util.h>
 #include <dslash_util.h>
 #include <blas_reference.h>
 #include <wilson_dslash_reference.h>
 #include <domain_wall_dslash_reference.h>
 #include "misc.h"
-
-#if defined(QMP_COMMS)
-#include <qmp.h>
-#elif defined(MPI_COMMS)
-#include <mpi.h>
-#endif
 
 #include <qio_field.h>
 
@@ -59,6 +54,8 @@ extern double tol; // tolerance for inverter
 extern double tol_hq; // heavy-quark tolerance for inverter
 extern QudaMassNormalization normalization; // mass normalization of Dirac operators
 extern QudaMatPCType matpc_type; // preconditioning type
+
+extern bool compute_plaq;
 
 extern double clover_coeff;
 extern bool compute_clover;
@@ -350,7 +347,7 @@ int main(int argc, char **argv)
     read_gauge_field(latfile, gauge, gauge_param.cpu_prec, gauge_param.X, argc, argv);
     construct_gauge_field(gauge, 2, gauge_param.cpu_prec, &gauge_param);
   } else { // else generate a random SU(3) field
-    construct_gauge_field(gauge, 1, gauge_param.cpu_prec, &gauge_param);
+    construct_gauge_field(gauge, 0, gauge_param.cpu_prec, &gauge_param);
   }
 
   if (dslash_type == QUDA_CLOVER_WILSON_DSLASH || dslash_type == QUDA_TWISTED_CLOVER_DSLASH) {
@@ -390,32 +387,26 @@ int main(int argc, char **argv)
   // load the gauge field
   loadGaugeQuda((void*)gauge, &gauge_param);
 
-  double plaq[3];
-  plaqQuda(plaq);
-  printfQuda("Computed plaquette is %e (spatial = %e, temporal = %e)\n", plaq[0], plaq[1], plaq[2]);
+
+  if(compute_plaq){
+    printfQuda("Will compute plaquette!\n");
+    double plaq[3];
+    plaqQuda(plaq);
+    printfQuda("Computed plaquette is %e (spatial = %e, temporal = %e)\n", plaq[0], plaq[1], plaq[2]);
+  }
+  else printfQuda("Will NOT compute plaquette!\n");
+
 
   // load the clover term, if desired
   if (dslash_type == QUDA_CLOVER_WILSON_DSLASH || dslash_type == QUDA_TWISTED_CLOVER_DSLASH)
     loadCloverQuda(clover, clover_inv, &inv_param);
 
+  auto *rng = new quda::RNG(V, 1234, gauge_param.X);
+  rng->Init();
+
   for (int k=0; k<Nsrc; k++) {
 
-    memset(spinorIn, 0, inv_param.Ls*V*spinorSiteSize*sSize);
-    memset(spinorCheck, 0, inv_param.Ls*V*spinorSiteSize*sSize);
-    if (multishift) {
-      for (int i=0; i<inv_param.num_offset; i++) memset(spinorOutMulti[i], 0, inv_param.Ls*V*spinorSiteSize*sSize);
-    } else {
-      memset(spinorOut, 0, inv_param.Ls*V*spinorSiteSize*sSize);
-    }
-
-    // perform the inversion
-    if (inv_param.cpu_prec == QUDA_SINGLE_PRECISION) {
-      //((float*)spinorIn)[0] = 1.0;
-      for (int i=0; i<inv_param.Ls*V*spinorSiteSize; i++) ((float*)spinorIn)[i] = rand() / (float)RAND_MAX;
-    } else {
-      //((double*)spinorIn)[0] = 1.0;
-      for (int i=0; i<inv_param.Ls*V*spinorSiteSize; i++) ((double*)spinorIn)[i] = rand() / (double)RAND_MAX;
-    }
+    construct_spinor_source(spinorIn, 4, 3, inv_param.cpu_prec, gauge_param.X, *rng);
 
     if (multishift) {
       invertMultiShiftQuda(spinorOutMulti, spinorIn, &inv_param);
@@ -423,6 +414,9 @@ int main(int argc, char **argv)
       invertQuda(spinorOut, spinorIn, &inv_param);
     }
   }
+
+  rng->Release();
+  delete rng;
 
   // stop the timer
   time0 += clock();

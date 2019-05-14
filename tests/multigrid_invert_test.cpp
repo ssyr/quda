@@ -12,13 +12,21 @@
 #include <domain_wall_dslash_reference.h>
 #include "misc.h"
 
-#if defined(QMP_COMMS)
-#include <qmp.h>
-#elif defined(MPI_COMMS)
-#include <mpi.h>
+
+// #if defined(QMP_COMMS)
+// #include <qmp.h>
+// #elif defined(MPI_COMMS)
+// #include <mpi.h>
+// #endif
+
+#ifdef HAVE_LIME
+extern "C" {
+#include <lime.h>
+}
 #endif
 
 #include <qio_field.h>
+#include <color_spinor_field.h>
 
 #define MAX(a,b) ((a)>(b)?(a):(b))
 
@@ -56,6 +64,8 @@ extern int gcrNkrylov; // number of inner iterations for GCR, or l for BiCGstab-
 extern int pipeline; // length of pipeline for fused operations in GCR or BiCGstab-l
 extern int nvec[];
 extern int mg_levels;
+
+extern bool compute_plaq;
 
 extern bool generate_nullspace;
 extern bool generate_all_levels;
@@ -623,13 +633,20 @@ int main(int argc, char **argv)
   }
 
   if (strcmp(latfile,"")) {  // load in the command line supplied gauge field
+#if defined(HAVE_LIME) && defined(MPI_COMMS)
+    printfQuda("### Reading Gauge field from LIME\n");
+    readLimeGauge(gauge, latfile, &gauge_param, &inv_param, gridsize_from_cmdline);
+    applyBoundaryCondition(gauge, V/2 ,&gauge_param);
+#else
+    printfQuda("### Reading Gauge field from QMP-QIO\n");
     read_gauge_field(latfile, gauge, gauge_param.cpu_prec, gauge_param.X, argc, argv);
     construct_gauge_field(gauge, 2, gauge_param.cpu_prec, &gauge_param);
+#endif
   } else { // else generate a random SU(3) field
     //generate a random SU(3) field
-    //construct_gauge_field(gauge, 1, gauge_param.cpu_prec, &gauge_param);
+    construct_gauge_field(gauge, 1, gauge_param.cpu_prec, &gauge_param);
     //generate a unit SU(3) field
-    construct_gauge_field(gauge, 0, gauge_param.cpu_prec, &gauge_param);
+    //construct_gauge_field(gauge, 0, gauge_param.cpu_prec, &gauge_param);
   }
 
   if (dslash_type == QUDA_CLOVER_WILSON_DSLASH || dslash_type == QUDA_TWISTED_CLOVER_DSLASH) {
@@ -649,9 +666,7 @@ int main(int argc, char **argv)
 
   void *spinorIn = malloc(V*spinorSiteSize*sSize*inv_param.Ls);
   void *spinorCheck = malloc(V*spinorSiteSize*sSize*inv_param.Ls);
-
-  void *spinorOut = NULL;
-  spinorOut = malloc(V*spinorSiteSize*sSize*inv_param.Ls);
+  void *spinorOut = malloc(V*spinorSiteSize*sSize*inv_param.Ls);
 
   // start the timer
   double time0 = -((double)clock());
@@ -662,9 +677,14 @@ int main(int argc, char **argv)
   // load the gauge field
   loadGaugeQuda((void*)gauge, &gauge_param);
 
-  double plaq[3];
-  plaqQuda(plaq);
-  printfQuda("Computed plaquette is %e (spatial = %e, temporal = %e)\n", plaq[0], plaq[1], plaq[2]);
+  if(compute_plaq){
+    printfQuda("Will compute plaquette!\n");
+    double plaq[3];
+    plaqQuda(plaq);
+    printfQuda("Computed plaquette is %e (spatial = %e, temporal = %e)\n", plaq[0], plaq[1], plaq[2]);
+  }
+  else printfQuda("Will NOT compute plaquette!\n");
+
 
   // this line ensure that if we need to construct the clover inverse (in either the smoother or the solver) we do so
   if (mg_param.smoother_solve_type[0] == QUDA_DIRECT_PC_SOLVE || solve_type == QUDA_DIRECT_PC_SOLVE) inv_param.solve_type = QUDA_DIRECT_PC_SOLVE;
@@ -676,22 +696,16 @@ int main(int argc, char **argv)
   void *mg_preconditioner = newMultigridQuda(&mg_param);
   inv_param.preconditioner = mg_preconditioner;
 
+  auto *rng = new quda::RNG(V, 1234, gauge_param.X);
+  rng->Init();
+
   for (int i=0; i<Nsrc; i++) {
-    // create a point source at 0 (in each subvolume...  FIXME)
-    memset(spinorIn, 0, inv_param.Ls*V*spinorSiteSize*sSize);
-    memset(spinorCheck, 0, inv_param.Ls*V*spinorSiteSize*sSize);
-    memset(spinorOut, 0, inv_param.Ls*V*spinorSiteSize*sSize);
-
-    if (inv_param.cpu_prec == QUDA_SINGLE_PRECISION) {
-      //((float*)spinorIn)[i] = 1.0;
-      for (int i=0; i<inv_param.Ls*V*spinorSiteSize; i++) ((float*)spinorIn)[i] = rand() / (float)RAND_MAX;
-    } else {
-      //((double*)spinorIn)[i] = 1.0;
-      for (int i=0; i<inv_param.Ls*V*spinorSiteSize; i++) ((double*)spinorIn)[i] = rand() / (double)RAND_MAX;
-    }
-
+    construct_spinor_source(spinorIn, 4, 3, inv_param.cpu_prec, gauge_param.X, *rng);
     invertQuda(spinorOut, spinorIn, &inv_param);
   }
+
+  rng->Release();
+  delete rng;
 
   // free the multigrid solver
   destroyMultigridQuda(mg_preconditioner);
@@ -791,6 +805,10 @@ int main(int argc, char **argv)
 
   // finalize the QUDA library
   endQuda();
+
+  free(spinorIn);
+  free(spinorCheck);
+  free(spinorOut);
 
   // finalize the communications layer
   finalizeComms();
