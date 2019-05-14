@@ -76,10 +76,6 @@ if(QUDA_MULTIGRID)
   target_link_libraries(multigrid_invert_test ${TEST_LIBS})
   QUDA_CHECKBUILDTEST(multigrid_invert_test QUDA_BUILD_ALL_TESTS)
 
-  cuda_add_executable(multigrid_invert_test_qlua multigrid_invert_test_qlua.cpp wilson_dslash_reference.cpp clover_reference.cpp domain_wall_dslash_reference.cpp blas_reference.cpp)
-  target_link_libraries(multigrid_invert_test_qlua ${TEST_LIBS})
-  QUDA_CHECKBUILDTEST(multigrid_invert_test_qlua QUDA_BUILD_ALL_TESTS)
-
   cuda_add_executable(multigrid_benchmark_test multigrid_benchmark_test.cu)
   target_link_libraries(multigrid_benchmark_test ${TEST_LIBS})
   QUDA_CHECKBUILDTEST(multigrid_benchmark_test QUDA_BUILD_ALL_TESTS)
