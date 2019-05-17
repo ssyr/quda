@@ -730,8 +730,7 @@ void loadGaugeQuda(void *h_gauge, QudaGaugeParam *param)
   profileGauge.TPSTART(QUDA_PROFILE_TOTAL);
 
   if (!initialized) errorQuda("QUDA not initialized");
-  //  if (getVerbosity() == QUDA_DEBUG_VERBOSE) printQudaGaugeParam(param);
-  printQudaGaugeParam(param);
+  if (getVerbosity() == QUDA_DEBUG_VERBOSE) printQudaGaugeParam(param);
 
   checkGaugeParam(param);
 
@@ -2559,8 +2558,7 @@ multigrid_solver::multigrid_solver(QudaMultigridParam &mg_param, TimeProfile &pr
   if (param->solve_type != QUDA_DIRECT_SOLVE)
     errorQuda("Outer MG solver can only use QUDA_DIRECT_SOLVE at present");
 
-  //  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printQudaMultigridParam(&mg_param);
-  printQudaMultigridParam(&mg_param);
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printQudaMultigridParam(&mg_param);
   mg_param.secs = 0;
   mg_param.gflops = 0;
 
@@ -2834,8 +2832,7 @@ void invertQuda(void *hp_x, void *hp_b, QudaInvertParam *param)
   if (!initialized) errorQuda("QUDA not initialized");
 
   pushVerbosity(param->verbosity);
-  //  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printQudaInvertParam(param);
-  printQudaInvertParam(param);
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printQudaInvertParam(param);
 
   checkInvertParam(param, hp_x, hp_b);
 
