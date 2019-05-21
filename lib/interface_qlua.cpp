@@ -885,6 +885,11 @@ QuarkContract_momProj_Quda(XTRN_CPLX *momproj_buf, XTRN_CPLX *corrQuda, const qu
 
   bool preserveBasis = paramAPI.preserveBasis == 1 ? true : false;
   bool qdp2quda = paramAPI.qdp2quda == 1 ? true : false;
+
+  //- Make sure that Peer-to-peer is disabled
+  char *qcEnableP2P = getenv("QUDA_ENABLE_P2P");
+  if( (!qcEnableP2P) || (strcmp(qcEnableP2P, "0")!=0) )
+    errorQuda("%s: Peer-to-peer MUST be disabled (export QUDA_ENABLE_P2P=0) to ensure correctness of results!\n", func_name);
   
   //-- Load the parameters required for the CSFs, TODO: May need to control this with paramAPI.mpParam.bc_t
   QudaGaugeParam gp;
@@ -1164,6 +1169,11 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   if( (paramAPI.mpParam.cntrType != what_tmd_g_F_B) && 
       (paramAPI.mpParam.cntrType != what_qpdf_g_F_B) )
     errorQuda("%s: Contraction type not parsed correctly or not supported!\n", func_name);
+
+  //- Make sure that Peer-to-peer is disabled
+  char *qcEnableP2P = getenv("QUDA_ENABLE_P2P");
+  if( (!qcEnableP2P) || (strcmp(qcEnableP2P, "0")!=0) )
+    errorQuda("%s: Peer-to-peer MUST be disabled (export QUDA_ENABLE_P2P=0) to ensure correctness of results!\n", func_name);
 
 
   if (check_quda_comms(qS)) return 1;
