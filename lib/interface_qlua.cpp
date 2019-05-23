@@ -19,6 +19,22 @@
 
 using namespace quda;
 
+const char *qc_contractTypeStr[QUDA_NTYPE_CONTRACT] = {
+  "none",
+  "qbarq_g_F_B",
+  "qbarq_g_F_aB",
+  "qbarq_g_F_hB",
+  "qbarq_g_vD_vD",
+  "qbarq_g_vD_avD",
+  "qbarq_g_vD_hvD",
+  "meson_F_B",
+  "meson_F_aB",
+  "meson_F_hB",
+  "baryon_sigma_UUS",
+  "qpdf_g_F_B",
+  "tmd_g_F_B"
+};
+
 void
 printCPUMemInfo(){
   struct sysinfo memInfo;

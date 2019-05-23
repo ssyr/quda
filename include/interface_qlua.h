@@ -30,27 +30,14 @@ typedef double QUDA_REAL;
 #define QUDA_MAX_RANK 6
 #define QUDA_MAX_NVEC 32
 #define QUDA_NVEC_PROP 12
+#define QUDA_NTYPE_CONTRACT 13
 #define QUDA_TIME_AXIS 3
 #define QUDA_LEN_G (QUDA_Ns*QUDA_Ns)
 
 #define PI 2*asin(1.0)
 #define THREADS_PER_BLOCK 64
 
-static const char *qc_contractTypeStr[13] = {
-  "none",
-  "qbarq_g_F_B",
-  "qbarq_g_F_aB",
-  "qbarq_g_F_hB",
-  "qbarq_g_vD_vD",
-  "qbarq_g_vD_avD",
-  "qbarq_g_vD_hvD",
-  "meson_F_B",
-  "meson_F_aB",
-  "meson_F_hB",
-  "baryon_sigma_UUS",
-  "qpdf_g_F_B",
-  "tmd_g_F_B"
-};
+extern const char *qc_contractTypeStr[QUDA_NTYPE_CONTRACT];
 
 typedef enum qluaCntrQQ_Id_s{
   cntr12 = 12,
