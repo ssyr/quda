@@ -113,7 +113,7 @@ namespace quda {
 
     qluaCntrQQ_Id cntrID;             // contract index
 
-    ContractQQArg(ColorSpinorField **propOut, ColorSpinorField **propIn1, ColorSpinorField **propIn2, int parity, cntrQQParam cQQParam)
+    ContractQQArg(ColorSpinorField **propOut, ColorSpinorField **propIn1, ColorSpinorField **propIn2, int parity, QQParam cQQParam)
       :   parity(parity), nParity(propIn1[0]->SiteSubset()), nFace(1),
 	  dim{ (3-nParity) * propIn1[0]->X(0), propIn1[0]->X(1), propIn1[0]->X(2), propIn1[0]->X(3), 1 },
       commDim{comm_dim_partitioned(0), comm_dim_partitioned(1), comm_dim_partitioned(2), comm_dim_partitioned(3)},

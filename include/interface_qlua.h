@@ -62,7 +62,8 @@ typedef enum {
   what_meson_F_hB     ,   /*  9 */
   what_baryon_sigma_UUS,  /* 10 */
   what_qpdf_g_F_B     ,   /* 11 */
-  what_tmd_g_F_B          /* 12 */
+  what_tmd_g_F_B      ,   /* 12 */
+  what_bb_qbarq_g_F_B     /* 13 */
 } qluaCntr_Type;
 
 struct qudaLattice_s { 
@@ -94,7 +95,7 @@ typedef struct {
 typedef struct {
   int nVec;
   qluaCntrQQ_Id cntrID;
-} cntrQQParam;
+} QQParam;
 
 typedef struct {
   int nVec;
@@ -116,14 +117,15 @@ typedef struct {
   qluaCntr_Type cntrType;  
   int localL[QUDA_DIM];
   int totalL[QUDA_DIM];
-} momProjParam;
+  int bb_max_depth;
+} cntrParam;
 
 typedef struct {
   QudaVerbosity verbosity;
   wuppertalParam wParam;
   APESmearParam apeParam;
-  cntrQQParam cQQParam;
-  momProjParam mpParam;
+  QQParam cQQParam;
+  cntrParam mpParam;
   int preserveBasis;
   char shfFlag[512];
   char shfType[512];

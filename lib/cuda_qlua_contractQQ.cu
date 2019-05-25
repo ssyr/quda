@@ -177,7 +177,7 @@ namespace quda {
 
   
   //-- Top level function, called within interface-qlua
-  void cudaContractQQ(ColorSpinorField **propOut, ColorSpinorField **propIn1, ColorSpinorField **propIn2, int parity, int Nc, int Ns, cntrQQParam cQQParam){
+  void cudaContractQQ(ColorSpinorField **propOut, ColorSpinorField **propIn1, ColorSpinorField **propIn2, int parity, int Nc, int Ns, QQParam cQQParam){
     
     if(Nc != QUDA_Nc) errorQuda("cudaContractQQ: Supports only Ncolor = %d. Got Nc = %d\n", QUDA_Nc, Nc);
     if(Ns != QUDA_Ns) errorQuda("cudaContractQQ: Supports only Nspin = %d.  Got Ns = %d\n", QUDA_Ns, Ns);

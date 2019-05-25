@@ -16,6 +16,7 @@
 #include <cuda_profiler_api.h>
 #include <sys/types.h>
 #include <sys/sysinfo.h>
+#include <assert.h>
 
 using namespace quda;
 
@@ -335,7 +336,7 @@ save_cudaColorSpinorField(QUDA_REAL *hbuf_x,
 
 static void createPhaseMatrix_CPU(complex<QUDA_REAL> *phaseMatrix,
 				  const int *momMatrix,
-				  momProjParam param,
+				  cntrParam param,
 				  int localL[], int totalL[])
 {
   
@@ -1182,8 +1183,9 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   int status = 0;
   const char *func_name = "QuarkTMDinit_Quda";
 
-  if( (paramAPI.mpParam.cntrType != what_tmd_g_F_B) && 
-      (paramAPI.mpParam.cntrType != what_qpdf_g_F_B) )
+  if( (paramAPI.mpParam.cntrType != what_tmd_g_F_B)  && 
+      (paramAPI.mpParam.cntrType != what_qpdf_g_F_B) &&
+      (paramAPI.mpParam.cntrType != what_bb_qbarq_g_F_B) )
     errorQuda("%s: Contraction type not parsed correctly or not supported!\n", func_name);
 
   //- Make sure that Peer-to-peer is disabled
@@ -1246,8 +1248,49 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   if(paramAPI.mpParam.expSgn != 1 && paramAPI.mpParam.expSgn != -1)
     errorQuda("%s: Got invalid exponential sign, expSgn = %d!\n", func_name, paramAPI.mpParam.expSgn);
 
-
   int nVec = paramAPI.mpParam.nVec;
+  //-------------------------------------------------------------
+
+  
+  //-- Load the parameters required for the ColorSpinorFields and GaugeFields
+  bool preserveBasis = paramAPI.preserveBasis == 1 ? true : false;
+  bool qdp2quda = paramAPI.qdp2quda == 1 ? true : false;
+  int Nc = QUDA_Nc;
+  int Ns = QUDA_Ns;
+
+  QudaGaugeParam gp;
+  int tBoundaryGauge = -1;
+  init_QudaGaugeParam_generic(gp, qS, tBoundaryGauge);
+  
+  QudaInvertParam ip;
+  init_QudaInvertParam_generic(ip, gp, paramAPI, preserveBasis, qdp2quda);
+  setVerbosity(paramAPI.verbosity);
+
+  //-- Initialize generic variables of qcs
+  qcs->iStep    = 0;
+  qcs->cntrType = paramAPI.mpParam.cntrType;
+  qcs->push_res = paramAPI.mpParam.push_res;
+  qcs->nVec     = paramAPI.mpParam.nVec;
+  qcs->paramAPI = paramAPI;
+
+  //- Setup the indices of the wlinks Color-Matrices, TMD-related
+  qcs->i_wl_b   = 0;
+  qcs->i_wl_vbv = 1;
+  qcs->i_wl_tmp = 2;
+
+  //- Initialize link paths, set to zero
+  qcs->v_lpath[0] = '\0'; //- TMD related
+  qcs->b_lpath[0] = '\0'; //- TMD, QPDF related
+
+  //- BB related parameters
+  if( (paramAPI.mpParam.cntrType == what_bb_qbarq_g_F_B) &&
+      ( (paramAPI.mpParam.bb_max_depth<0) || (paramAPI.mpParam.bb_max_depth>QCSTATE_BB_MAX_DEPTH) ) )
+    errorQuda("%s: bb_max_depth not set correctly! Got bb_max_depth = %d\n", func_name, paramAPI.mpParam.bb_max_depth);
+  qcs->bb_max_depth = paramAPI.mpParam.bb_max_depth;
+  memset(qcs->bb_lpath_stk, 0, sizeof(qcs->bb_lpath_stk));
+  strcpy(qcs->bb_lpath_stk[0],"");
+  qcs->bb_cur_depth = 1;
+
 
   //-- Print parameters
   printfQuda("%s:\n", func_name);
@@ -1272,40 +1315,9 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   printfQuda("  Got bc_t     = %f\n",   paramAPI.mpParam.bc_t);
   printfQuda("  Got expSgn   = %+d\n",  paramAPI.mpParam.expSgn);
   printfQuda("  Got push_r   = %s\n",   paramAPI.mpParam.push_res == 1 ? "YES" : "NO");
-  printfQuda("  Will create phase matrix on %s\n", paramAPI.mpParam.GPU_phaseMatrix == 1 ? "GPU" : "CPU"); 
-  //-------------------------------------------------------------
-
-  
-  //-- Load the parameters required for the ColorSpinorFields and GaugeFields
-  bool preserveBasis = paramAPI.preserveBasis == 1 ? true : false;
-  bool qdp2quda = paramAPI.qdp2quda == 1 ? true : false;
-  int Nc = QUDA_Nc;
-  int Ns = QUDA_Ns;
-
-  QudaGaugeParam gp;
-  int tBoundaryGauge = -1;
-  init_QudaGaugeParam_generic(gp, qS, tBoundaryGauge);
-  
-  QudaInvertParam ip;
-  init_QudaInvertParam_generic(ip, gp, paramAPI, preserveBasis, qdp2quda);
-  setVerbosity(paramAPI.verbosity);
-
-  //-- Initialize generic variables of qcs
-  qcs->cntrType = paramAPI.mpParam.cntrType;
-  qcs->push_res = paramAPI.mpParam.push_res;
-  qcs->nVec     = paramAPI.mpParam.nVec;
-  qcs->paramAPI = paramAPI;
-
-  //- Setup the indices of the wlinks Color-Matrices
-  qcs->i_wl_b   = 0;
-  qcs->i_wl_vbv = 1;
-  qcs->i_wl_tmp = 2;
-
-  //- Initialize link paths, set to zero
-  qcs->v_lpath[0] = '\0';
-  qcs->b_lpath[0] = '\0';
-  qcs->iStep = 0;
-
+  printfQuda("  Will create phase matrix on %s\n", paramAPI.mpParam.GPU_phaseMatrix == 1 ? "GPU" : "CPU");
+  if(paramAPI.mpParam.cntrType == what_bb_qbarq_g_F_B)
+    printfQuda("  Got Maxdepth = %d\n", paramAPI.mpParam.bb_max_depth);
   printfQuda("%s: Invert-Gauge-Generic parameters set!\n", func_name);
   //-------------------------------------------------------------
 
@@ -1351,7 +1363,7 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
       errorQuda("%s: Cannot allocate auxilliary extended Gauge Fields! Exiting.\n", func_name);
   }
   else{
-    //- No auxilliary gauge fields needed for qPDF contractions
+    //- No auxilliary gauge fields needed for qPDF and BB contractions
     qcs->bsh_u  = NULL;
     qcs->aux_u  = NULL;
     qcs->wlinks = NULL;
@@ -1369,22 +1381,48 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
 
   LONG_T csVecLgh  = paramAPI.mpParam.locvol * Nc * Ns * 2;
 
-  //- Allocate device pointers of Forward and Backward propagators
+  //- Allocate forward  host and device backward propagator, and an auxilliary vector; common across TMD, qPDF, BB
   for(int ivec=0;ivec<nVec;ivec++){
     qcs->cpuPropFrw[ivec]  = new_cpuColorSpinorField(gp, ip, Nc, Ns, &(qudaPropFrw_host[ivec * csVecLgh]) );
     if(qcs->cpuPropFrw[ivec] == NULL)
       errorQuda("%s: Cannot allocate cpu forward propagator for ivec = %d. Exiting.\n", func_name, ivec);
-
-    qcs->cudaPropFrw_bsh[ivec] = new_cudaColorSpinorField(gp, ip, Nc, Ns, &(qudaPropFrw_host[ivec * csVecLgh]) );
-    qcs->cudaPropBkw[ivec]     = new_cudaColorSpinorField(gp, ip, Nc, Ns, &(qudaPropBkw_host[ivec * csVecLgh]) );
-    if( (qcs->cudaPropFrw_bsh[ivec] == NULL) || (qcs->cudaPropBkw[ivec] == NULL) )
-      errorQuda("%s: Cannot allocate cuda forward and/or backward propagators for ivec = %d. Exiting.\n", func_name, ivec);
+    
+    qcs->cudaPropBkw[ivec] = new_cudaColorSpinorField(gp, ip, Nc, Ns, &(qudaPropBkw_host[ivec * csVecLgh]) );
+    if(qcs->cudaPropBkw[ivec] == NULL)
+      errorQuda("%s: Cannot allocate cuda backward propagator for ivec = %d. Exiting.\n", func_name, ivec);
   }
 
-  //- Allocate auxilliary vector, initialize to zero
   qcs->cudaPropAux = new_cudaColorSpinorField(gp, ip, Nc, Ns, NULL);
   if(qcs->cudaPropAux == NULL)
     errorQuda("%s: Cannot allocate auxilliary cuda Vector. Exiting.\n", func_name);
+
+
+  if( (paramAPI.mpParam.cntrType == what_tmd_g_F_B) || 
+      (paramAPI.mpParam.cntrType == what_qpdf_g_F_B) ) {
+    //- Allocate device forward propagator for TMD, qPDF contractions
+    for(int ivec=0;ivec<nVec;ivec++){      
+      qcs->cudaPropFrw_bsh[ivec] = new_cudaColorSpinorField(gp, ip, Nc, Ns, &(qudaPropFrw_host[ivec * csVecLgh]) );
+      if(qcs->cudaPropFrw_bsh[ivec] == NULL)
+	errorQuda("%s: Cannot allocate cuda forward propagator for ivec = %d. Exiting.\n", func_name, ivec);
+    }
+  }
+  else{
+    //- Allocate device forward propagator holding the stack for BB contractions
+    for(int ibb=0;ibb<qcs->bb_max_depth;ibb++){
+      for(int ivec=0;ivec<nVec;ivec++){
+	qcs->bb_frwprop_stk[ibb][ivec] = new_cudaColorSpinorField(gp, ip, Nc, Ns, NULL);  //- Initialize to zero all vectors for all depths
+	if(qcs->bb_frwprop_stk[ibb][ivec] == NULL)
+	  errorQuda("%s: Cannot allocate cuda forward stack propagator for ibb,ivec = %d,%d. Exiting.\n", func_name, ibb, ivec);
+      }
+    }
+    qcCPUtoCudaProp(qcs->bb_frwprop_stk[0], qcs->cpuPropFrw, nVec);  //- Copy the host forward propagator to the 0th position of the device forward stack propagator    
+    
+    //- CPU forward propagator not needed anymore in the BB case!
+    for(int i=0;i<qcs->nVec;i++){
+      delete qcs->cpuPropFrw[i];
+      qcs->cpuPropFrw[i] = NULL;
+    }
+  }
 
   double t4 = MPI_Wtime();
   printfQuda("TIMING - %s: Cuda Color-Spinor fields loaded in %f sec.\n", func_name, t4-t3);
@@ -1493,15 +1531,22 @@ TMD_QPDF_freeState_Quda(void **Vqcs){
 
   //- Delete propagators
   for(int i=0;i<qcs->nVec;i++){
-    delete qcs->cpuPropFrw[i];
-    delete qcs->cudaPropFrw_bsh[i];
     delete qcs->cudaPropBkw[i];
-    qcs->cpuPropFrw[i] = NULL;
-    qcs->cudaPropFrw_bsh[i] = NULL;
     qcs->cudaPropBkw[i] = NULL;
   }
   delete qcs->cudaPropAux;
   qcs->cudaPropAux = NULL;
+
+  if( (qcs->cntrType == what_tmd_g_F_B) ||
+      (qcs->cntrType == what_qpdf_g_F_B) ) {  
+    for(int i=0;i<qcs->nVec;i++){
+      delete qcs->cpuPropFrw[i];
+      delete qcs->cudaPropFrw_bsh[i];
+      qcs->cpuPropFrw[i] = NULL;
+      qcs->cudaPropFrw_bsh[i] = NULL;
+    }
+  }
+
 
   //- Delete correlators and momentum-projection related buffers
   cudaFree(qcs->phaseMatrix_dev);
@@ -1821,6 +1866,116 @@ QPDFstep_momProj_Quda(void *Vqcs,
   return status;
 }
 
+EXTRN_C int
+BBstep_momProj_Quda(void *Vqcs,
+		      XTRN_CPLX *momproj_buf,     /* output in Pspace */
+		      XTRN_CPLX *corrQuda,        /* output in Xspace if push_res */
+		      const char *b_lpath) 
+{
+
+  cudaProfilerStart();
+
+  double t14 = MPI_Wtime();
+  int status = 0;
+  const char *func_name = "BBstep_momProj_Quda";
+
+  if (QCSTATE_BB_MAX_LPATH < strlen(b_lpath)) {
+    errorQuda("%s: lpath_length = %zu exceeds max_length = %d\n", func_name, strlen(b_lpath), QCSTATE_BB_MAX_LPATH);
+    return 1;
+  }
+
+  QuarkTMD_state *qcs = (static_cast<QuarkTMD_state *>(Vqcs));
+
+  printfQuda("%s: Performing BB-step %d...\n", func_name, ++qcs->iStep);
+
+  int k0;     /* find max depth to keep */
+  for (k0 = qcs->bb_cur_depth ;
+      0 <= k0 && !string_prefix(qcs->bb_lpath_stk[k0], b_lpath) ; 
+      k0-- );
+  assert(0 <= k0);  /* sic! always have zero lpath at [0] */
+
+  if (qcs->bb_max_depth <= k0) {
+    errorQuda("%s: lpath_depth = %d exceeds max_depth = %d\n", func_name, k0, qcs->bb_max_depth);
+    return 1;
+  }
+  if(getVerbosity() >= QUDA_VERBOSE)
+    printfQuda("%s: build '%s'->'%s' lpath_frwprop (reuse depth[%d])\n", 
+        func_name, qcs->bb_lpath_stk[k0], b_lpath, k0);
+  
+  const char *cur_lpath = qcs->bb_lpath_stk[k0];
+  int cur_blen = strlen(cur_lpath);
+  const char *b_lpath_inc = b_lpath + cur_blen;
+  
+  /* build up b_lpath */
+  for (int first_c = 1 ; *b_lpath_inc ; b_lpath_inc++, first_c = 0) {
+    char c = *b_lpath_inc;
+    qcTMD_ShiftFlag shfFlag = TMDparseShiftFlag(c);
+
+    //- Covariant shift of qcs->cudaPropFrw_bsh in dir 'c'
+    double t1 = MPI_Wtime();
+    for(int ivec = 0 ; ivec < qcs->nVec ; ivec++) {
+      if (first_c) {  /* [k0+1] <- CShift([k0]) */
+        perform_ShiftCudaVec_Cov(qcs->bb_frwprop_stk[k0+1][ivec], 
+            qcs->bb_frwprop_stk[k0][ivec], qcs->gf_u, shfFlag);
+      } else { /* [k0+1] <- CShift([k0+1]) */
+        perform_ShiftCudaVec_Cov(qcs->cudaPropAux, 
+            qcs->bb_frwprop_stk[1+k0][ivec], qcs->gf_u, shfFlag);
+        qcSwapCudaVec(&(qcs->bb_frwprop_stk[1+k0][ivec]), &(qcs->cudaPropAux));
+      }
+    }
+    double t2 = MPI_Wtime();
+    printfQuda("TIMING - %s: Covariant Propagator shift done in %f sec.\n", func_name, t2-t1);
+  }
+
+  /* memorize new max linkpath */ 
+  strncpy(qcs->bb_lpath_stk[k0+1], b_lpath, QCSTATE_BB_MAX_LPATH);
+  qcs->bb_lpath_stk[k0+1][QCSTATE_BB_MAX_LPATH] = '\0';
+  /* set new stack top */
+  qcs->bb_cur_depth = k0 + 1;
+
+  //- Perform PDF contractions
+  double t9 = MPI_Wtime();
+  QuarkContract_TMD_QPDF(qcs);
+  double t10 = MPI_Wtime();
+  printfQuda("TIMING - %s: Function QuarkContract_TMD_QPDF done in %f sec.\n", func_name, t10-t9);
+
+  //- Perform Momentum Projection
+  double t11 = MPI_Wtime();
+  int mpStat = momProjCorr_TMD_QPDF(qcs, momproj_buf);
+  if(mpStat != 0) {
+    errorQuda("mpStat=%d\n", mpStat);
+    return 1;
+  }
+  double t12 = MPI_Wtime();
+  printfQuda("TIMING - %s: Function momProjCorr_TMD_QPDF done in %f sec.\n", func_name, t12-t11);
+
+  //-- Copy the position space correlator back to CPU if required
+  if(qcs->push_res){
+    double t24 = MPI_Wtime();
+    LONG_T lV = qcs->paramAPI.mpParam.locvol;
+    int Ndata = qcs->paramAPI.mpParam.Ndata;
+    size_t corrByteSize = sizeof(complex<QUDA_REAL>) * lV * Ndata;
+    cudaMemcpy(corrQuda, qcs->corrQuda_dev, corrByteSize, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+    checkCudaError();
+    double t25 = MPI_Wtime();
+    printfQuda("%s: Position-space correlator copied to CPU in %f sec.\n", func_name, t25-t24);
+  }
+
+  saveTuneCache();
+
+  if(getVerbosity() >= QUDA_VERBOSE){
+    printfQuda("%s: Memory Report after PDF step %d:\n", func_name, qcs->iStep);
+    Qlua_printMemInfo();
+  }
+
+  double t15 = MPI_Wtime();
+  printfQuda("TIMING - %s: GPU PDF step %d finished successfully in %f sec. Returning...\n", func_name, qcs->iStep, t15-t14);
+
+  cudaProfilerStop();
+
+  return status;
+}
 
 EXTRN_C int
 QluaCheckMemoryStatus(long long nElem){

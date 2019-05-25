@@ -27,7 +27,7 @@ namespace quda {
 
   void createPhaseMatrix_GPU(complex<QUDA_REAL> *phaseMatrix_dev,
                              const int *momMatrix,
-                             momProjParam param){
+                             cntrParam param){
     int *momMatrix_dev;
     cudaMalloc((void**)&momMatrix_dev, sizeof(int)*param.momDim*param.Nmoms );
     checkCudaErrorNoSync();
@@ -692,7 +692,11 @@ namespace quda {
       cudaFree(arg_dev);
     }
     else{
-      QluaContractArg arg(qcs->cudaPropFrw_bsh, qcs->cudaPropBkw, NULL, qcs->cntrType, qcs->paramAPI.preserveBasis, qcs->nVec); 
+      cudaColorSpinorField **frwProp = NULL;
+      if(qcs->cntrType == what_qpdf_g_F_B)          frwProp = qcs->cudaPropFrw_bsh;
+      else if(qcs->cntrType == what_bb_qbarq_g_F_B) frwProp = qcs->bb_frwprop_stk[qcs->bb_cur_depth];
+
+      QluaContractArg arg(frwProp, qcs->cudaPropBkw, NULL, qcs->cntrType, qcs->paramAPI.preserveBasis, qcs->nVec); 
       QluaContractArg *arg_dev;
       cudaMalloc((void**)&(arg_dev), sizeof(arg) );
       checkCudaError();

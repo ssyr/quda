@@ -78,7 +78,7 @@ namespace quda {
     const int totalL[QUDA_DIM];
     const int commCoord[QUDA_DIM];
 
-    MomProjArg(momProjParam param)
+    MomProjArg(cntrParam param)
       :   V3(param.V3), momDim(param.momDim), Nmoms(param.Nmoms), expSgn(param.expSgn),
 	  csrc{param.csrc[0],param.csrc[1],param.csrc[2],param.csrc[3]},
       localL{param.localL[0],param.localL[1],param.localL[2],param.localL[3]},
@@ -148,6 +148,14 @@ namespace quda {
     //- current link paths
     char v_lpath[1024];
     char b_lpath[1024];
+
+#define QCSTATE_BB_MAX_DEPTH    8       /* 0-link is depth=0 */
+#define QCSTATE_BB_MAX_LPATH    QCSTATE_BB_MAX_DEPTH
+    int bb_max_depth;
+    int bb_cur_depth;                                                             /* <- 1 at start, */
+    /* [depth] arrays */
+    char bb_lpath_stk[QCSTATE_BB_MAX_DEPTH+1][QCSTATE_BB_MAX_LPATH+1];            /* [0] <- "" */
+    cudaColorSpinorField *bb_frwprop_stk[QCSTATE_BB_MAX_DEPTH+1][QUDA_MAX_NVEC];  /* [0] <- cpuPropFrw */
 
     //- Correlator and momentum-projection related buffers
     complex<QUDA_REAL> *phaseMatrix_dev;  //-- Device Phase Matrix buffer
@@ -226,11 +234,11 @@ namespace quda {
   		      ColorSpinorField **propIn1,
   		      ColorSpinorField **propIn2,
   		      int parity, int Nc, int Ns,
-  		      cntrQQParam cParam);
+  		      QQParam cParam);
   
   void createPhaseMatrix_GPU(complex<QUDA_REAL> *phaseMatrix,
 			     const int *momMatrix,
-                             momProjParam param);
+                             cntrParam param);
 
   void QuarkContract_uLocal(complex<QUDA_REAL> *corrQuda_dev,
                             cudaColorSpinorField **cudaProp1,
