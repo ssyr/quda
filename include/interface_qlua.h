@@ -232,4 +232,10 @@ QPDFstep_momProj_Quda(void *Vqcs,
 		      XTRN_CPLX *corrQuda,        /* output in Xspace if push_res */
 		      const char *b_lpath);
 
+EXTRN_C int
+BBstep_momProj_Quda(void *Vqcs,
+		    XTRN_CPLX *momproj_buf,     /* output in Pspace */
+		    XTRN_CPLX *corrQuda,        /* output in Xspace if push_res */
+		    const char *b_lpath);
+
 #endif/*INTERFACE_QLUA_H__*/
