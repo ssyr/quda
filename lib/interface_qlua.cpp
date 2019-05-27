@@ -33,7 +33,8 @@ const char *qc_contractTypeStr[QUDA_NTYPE_CONTRACT] = {
   "meson_F_hB",
   "baryon_sigma_UUS",
   "qpdf_g_F_B",
-  "tmd_g_F_B"
+  "tmd_g_F_B",
+  "bb_g_F_B"
 };
 
 void
@@ -125,6 +126,7 @@ qluaCntr_Type parse_qcContractType(const char *s){
   else if (strcmp(s,"baryon_sigma_UUS")==0) cT = what_baryon_sigma_UUS;
   else if (strcmp(s,"qpdf_g_F_B")==0)       cT = what_qpdf_g_F_B;
   else if (strcmp(s,"tmd_g_F_B")==0)        cT = what_tmd_g_F_B;
+  else if (strcmp(s,"bb_g_F_B")==0)         cT = what_bb_g_F_B;
   else cT = what_none;
   
   return cT;
@@ -895,8 +897,10 @@ QuarkContract_momProj_Quda(XTRN_CPLX *momproj_buf, XTRN_CPLX *corrQuda, const qu
 
   if(paramAPI.mpParam.cntrType == what_none)
     errorQuda("%s: Contraction type not parsed correctly or not supported!\n", func_name);
-  else if((paramAPI.mpParam.cntrType == what_tmd_g_F_B) || (paramAPI.mpParam.cntrType == what_qpdf_g_F_B))
-    errorQuda("%s: This function does not support the qPDF and TMD contractions!\n", func_name);
+  else if((paramAPI.mpParam.cntrType == what_tmd_g_F_B)  ||
+	  (paramAPI.mpParam.cntrType == what_qpdf_g_F_B) ||
+	  (paramAPI.mpParam.cntrType == what_bb_g_F_B))
+    errorQuda("%s: This function does not support the qPDF, BB and TMD contractions!\n", func_name);
   else
     printfQuda("%s: Got Contraction type %s\n", func_name, qc_contractTypeStr[paramAPI.mpParam.cntrType]);
 
@@ -1185,7 +1189,7 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
 
   if( (paramAPI.mpParam.cntrType != what_tmd_g_F_B)  && 
       (paramAPI.mpParam.cntrType != what_qpdf_g_F_B) &&
-      (paramAPI.mpParam.cntrType != what_bb_qbarq_g_F_B) )
+      (paramAPI.mpParam.cntrType != what_bb_g_F_B) )
     errorQuda("%s: Contraction type not parsed correctly or not supported!\n", func_name);
 
   //- Make sure that Peer-to-peer is disabled
@@ -1283,7 +1287,7 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   qcs->b_lpath[0] = '\0'; //- TMD, QPDF related
 
   //- BB related parameters
-  if( (paramAPI.mpParam.cntrType == what_bb_qbarq_g_F_B) &&
+  if( (paramAPI.mpParam.cntrType == what_bb_g_F_B) &&
       ( (paramAPI.mpParam.bb_max_depth<0) || (paramAPI.mpParam.bb_max_depth>QCSTATE_BB_MAX_DEPTH) ) )
     errorQuda("%s: bb_max_depth not set correctly! Got bb_max_depth = %d\n", func_name, paramAPI.mpParam.bb_max_depth);
   qcs->bb_max_depth = paramAPI.mpParam.bb_max_depth;
@@ -1316,7 +1320,7 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   printfQuda("  Got expSgn   = %+d\n",  paramAPI.mpParam.expSgn);
   printfQuda("  Got push_r   = %s\n",   paramAPI.mpParam.push_res == 1 ? "YES" : "NO");
   printfQuda("  Will create phase matrix on %s\n", paramAPI.mpParam.GPU_phaseMatrix == 1 ? "GPU" : "CPU");
-  if(paramAPI.mpParam.cntrType == what_bb_qbarq_g_F_B)
+  if(paramAPI.mpParam.cntrType == what_bb_g_F_B)
     printfQuda("  Got Maxdepth = %d\n", paramAPI.mpParam.bb_max_depth);
   printfQuda("%s: Invert-Gauge-Generic parameters set!\n", func_name);
   //-------------------------------------------------------------
@@ -1406,7 +1410,7 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
 	errorQuda("%s: Cannot allocate cuda forward propagator for ivec = %d. Exiting.\n", func_name, ivec);
     }
   }
-  else{
+  else if(paramAPI.mpParam.cntrType == what_bb_g_F_B){
     //- Allocate device forward propagator holding the stack for BB contractions
     for(int ibb=0;ibb<qcs->bb_max_depth;ibb++){
       for(int ivec=0;ivec<nVec;ivec++){

@@ -30,7 +30,7 @@ typedef double QUDA_REAL;
 #define QUDA_MAX_RANK 6
 #define QUDA_MAX_NVEC 32
 #define QUDA_NVEC_PROP 12
-#define QUDA_NTYPE_CONTRACT 13
+#define QUDA_NTYPE_CONTRACT 14
 #define QUDA_TIME_AXIS 3
 #define QUDA_LEN_G (QUDA_Ns*QUDA_Ns)
 
@@ -63,7 +63,7 @@ typedef enum {
   what_baryon_sigma_UUS,  /* 10 */
   what_qpdf_g_F_B     ,   /* 11 */
   what_tmd_g_F_B      ,   /* 12 */
-  what_bb_qbarq_g_F_B     /* 13 */
+  what_bb_g_F_B           /* 13 */
 } qluaCntr_Type;
 
 struct qudaLattice_s { 

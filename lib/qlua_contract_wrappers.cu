@@ -509,6 +509,7 @@ namespace quda {
       if(cntrType == what_tmd_g_F_B)    flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*(1+Nc*Ns) * 8 + Ns*Ns*Ns * 2);
       if(cntrType == what_qbarq_g_F_aB) flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*Ns * 8 + Ns*Ns*Ns * 2);
       if(cntrType == what_qpdf_g_F_B)   flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*Ns * 8 + Ns*Ns*Ns * 2);
+      if(cntrType == what_bb_g_F_B)     flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*Ns * 8 + Ns*Ns*Ns * 2);
       return flopCnt;
     }
     long long bytes() const{
@@ -516,6 +517,7 @@ namespace quda {
       if(cntrType == what_tmd_g_F_B)    byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc + Nc*Nc) * 2*8;
       if(cntrType == what_qbarq_g_F_aB) byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc) * 2*8;
       if(cntrType == what_qpdf_g_F_B)   byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc) * 2*8;
+      if(cntrType == what_bb_g_F_B)     byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc) * 2*8;
       return byteCnt;
     }
     bool tuneGridDim() const { return false; }
@@ -551,8 +553,11 @@ namespace quda {
 
     void apply(const cudaStream_t &stream) {
       TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
-      if((cntrType != what_tmd_g_F_B) && (cntrType != what_qbarq_g_F_aB) && (cntrType != what_qpdf_g_F_B))
-        errorQuda("quarkContract::apply(): Support only what_tmd_g_F_B, what_qpdf_g_F_B and what_qbarq_g_F_aB contractions for now!\n");
+      if((cntrType != what_tmd_g_F_B)    &&
+	 (cntrType != what_qbarq_g_F_aB) &&
+	 (cntrType != what_qpdf_g_F_B)   &&
+	 (cntrType != what_bb_g_F_B))
+        errorQuda("quarkContract::apply(): Support only what_tmd_g_F_B, what_qpdf_g_F_B, what_bb_g_F_B and what_qbarq_g_F_aB contractions for now!\n");
 
       if(getVerbosity() >= QUDA_DEBUG_VERBOSE)
 	printfQuda("quarkContract::apply(): grid={%ld,%ld,%ld} block={%ld,%ld,%ld} shmem=%ld\n",
@@ -562,7 +567,7 @@ namespace quda {
 
       if(cntrType == what_tmd_g_F_B)
 	tmd_g_U_D_aD_gvec_kernel<<<tp.grid, tp.block, tp.shared_bytes, stream>>>(corrQuda_dev, (qcTMD_Arg*)arg_dev);
-      if( (cntrType == what_qbarq_g_F_aB) || (cntrType == what_qpdf_g_F_B) )
+      if( (cntrType == what_qbarq_g_F_aB) || (cntrType == what_qpdf_g_F_B) || (cntrType == what_bb_g_F_B) )
       	qbarq_g_P_aP_gvec_shMem_kernel<<<tp.grid, tp.block, tp.shared_bytes, stream>>>(corrQuda_dev, (QluaContractArg*)arg_dev);
     }
 
@@ -596,7 +601,9 @@ namespace quda {
     
     if(typeid(QC_REAL) != typeid(QUDA_REAL)) errorQuda("%s: QUDA_REAL and QC_REAL type mismatch!\n", func_name);
 
-    if( (paramAPI.mpParam.cntrType == what_tmd_g_F_B) || (paramAPI.mpParam.cntrType == what_qpdf_g_F_B) )
+    if( (paramAPI.mpParam.cntrType == what_tmd_g_F_B)  ||
+	(paramAPI.mpParam.cntrType == what_qpdf_g_F_B) ||
+	(paramAPI.mpParam.cntrType == what_bb_g_F_B) )
       errorQuda("%s: Contraction type %s not supported!\n", func_name, qc_contractTypeStr[paramAPI.mpParam.cntrType]);
 
     QluaContractArg arg(cudaProp1, cudaProp2, cudaProp3, paramAPI.mpParam.cntrType, paramAPI.preserveBasis, paramAPI.mpParam.nVec); 
@@ -662,8 +669,8 @@ namespace quda {
 
     const char *func_name = "QuarkContract_TMD_QPDF";
 
-    if( (qcs->cntrType != what_tmd_g_F_B) && (qcs->cntrType != what_qpdf_g_F_B) )
-      errorQuda("%s: This function supports only TMD and PDF contractions!\n", func_name);
+    if( (qcs->cntrType != what_tmd_g_F_B) && (qcs->cntrType != what_qpdf_g_F_B) && (qcs->cntrType != what_bb_g_F_B) )
+      errorQuda("%s: This function supports only TMD, BB and PDF contractions!\n", func_name);
 
     if(qcs->cntrType == what_tmd_g_F_B){
       qcTMD_Arg arg(qcs->cudaPropFrw_bsh, qcs->cudaPropBkw, qcs->wlinks, qcs->i_wl_vbv, qcs->paramAPI.preserveBasis, qcs->nVec);    
@@ -693,8 +700,8 @@ namespace quda {
     }
     else{
       cudaColorSpinorField **frwProp = NULL;
-      if(qcs->cntrType == what_qpdf_g_F_B)          frwProp = qcs->cudaPropFrw_bsh;
-      else if(qcs->cntrType == what_bb_qbarq_g_F_B) frwProp = qcs->bb_frwprop_stk[qcs->bb_cur_depth];
+      if(qcs->cntrType == what_qpdf_g_F_B)    frwProp = qcs->cudaPropFrw_bsh;
+      else if(qcs->cntrType == what_bb_g_F_B) frwProp = qcs->bb_frwprop_stk[qcs->bb_cur_depth];
 
       QluaContractArg arg(frwProp, qcs->cudaPropBkw, NULL, qcs->cntrType, qcs->paramAPI.preserveBasis, qcs->nVec); 
       QluaContractArg *arg_dev;

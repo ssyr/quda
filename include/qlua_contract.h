@@ -163,7 +163,7 @@ namespace quda {
       volumeCB(propIn1[0]->VolumeCB()),volume(propIn1[0]->Volume()), preserveBasis(preserveBasis), nVec(nVec_)
     {
 
-      if((cntrType != what_qpdf_g_F_B) && (cntrType != what_qbarq_g_F_aB) && (nVec != QUDA_NVEC_PROP))
+      if((cntrType != what_qpdf_g_F_B) && (cntrType != what_bb_g_F_B) && (cntrType != what_qbarq_g_F_aB) && (nVec != QUDA_NVEC_PROP))
 	errorQuda("QluaContractArg: Ultra-local contractions apart from qbarq_g_F_aB support only nVec = %d. Got nVec = %d\n", QUDA_NVEC_PROP, nVec);
 
       for(int ivec=0;ivec<nVec;ivec++){
