@@ -145,6 +145,9 @@ namespace quda {
     //- whether to return position space correlator (true) or not
     int push_res;
 
+    //- whether zero-link contractions are done
+    int bb_zerolink_done;
+
     //- current link paths
     char v_lpath[1024];
     char b_lpath[1024];
