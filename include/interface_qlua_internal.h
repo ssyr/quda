@@ -130,7 +130,7 @@ namespace quda {
 
   //- C.K. Structure holding the current state,
   //- required for TMD contractions
-  struct QuarkTMD_state_s {
+  struct QuarkContractState_s {
 
     int iStep;
 
@@ -198,7 +198,7 @@ namespace quda {
     qudaAPI_Param paramAPI;
   };
 
-  typedef struct QuarkTMD_state_s QuarkTMD_state;
+  typedef struct QuarkContractState_s QuarkContractState;
 
   
   __device__ int d_crdChkVal = 0;
@@ -206,7 +206,7 @@ namespace quda {
   void convertSiteOrder_QudaQDP_to_momProj(void *corrInp_dev, const void *corrQuda_dev, QluaUtilArg utilArg);
 
 
-  qcTMD_ShiftFlag TMDparseShiftFlag(char flagStr);
+  qcTMD_ShiftFlag qcParseShiftFlag(char flagStr);
 
 
   void qcCPUtoCudaVec(cudaColorSpinorField *cudaVec, cpuColorSpinorField *cpuVec);
@@ -250,7 +250,7 @@ namespace quda {
                             complex<QUDA_REAL> *S2, complex<QUDA_REAL> *S1,
                             qudaAPI_Param paramAPI);
 
-  void QuarkContract_TMD_QPDF(QuarkTMD_state *qcs);
+  void QuarkContract_TMD_QPDF(QuarkContractState *qcs);
   
 } //- namespace quda
   

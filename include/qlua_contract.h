@@ -29,11 +29,11 @@ namespace quda {
 
   extern const int nShiftFlag;
   extern const int nShiftType;
-  extern const char *qcTMD_ShiftFlagArray;
+  extern const char *qcShiftFlagArray;
 
-  extern const char *qcTMD_ShiftTypeArray[];
-  extern const char *qcTMD_ShiftDirArray[];
-  extern const char *qcTMD_ShiftSgnArray[];
+  extern const char *qcShiftTypeArray[];
+  extern const char *qcShiftDirArray[];
+  extern const char *qcShiftSgnArray[];
 
 
   /** C.K.

@@ -11,20 +11,6 @@
 
 namespace quda {  
 
-  const int nShiftFlag = 20;
-  const int nShiftType = 3;
-  
-  const char *qcTMD_ShiftFlagArray = "XxYyZzTtQqRrSsUuVvWw" ;
-  const char *qcTMD_ShiftTypeArray[] = {
-    "Covariant",
-    "Non-Covariant",
-    "AdjSplitCov"};
-  
-  const char *qcTMD_ShiftDirArray[] = {"x", "y", "z", "t"};
-  const char *qcTMD_ShiftSgnArray[] = {"-", "+"};
-  //---------------------------------------------------------------------------
-
-
   void createPhaseMatrix_GPU(complex<QUDA_REAL> *phaseMatrix_dev,
                              const int *momMatrix,
                              cntrParam param){
@@ -95,33 +81,33 @@ namespace quda {
   }
   //---------------------------------------------------------------------------
 
-  qcTMD_ShiftFlag TMDparseShiftFlag(char flagStr){
+  qcTMD_ShiftFlag qcParseShiftFlag(char flagStr){
     
     qcTMD_ShiftFlag shfFlag = qcShfStr_None;
     for(int iopt=0;iopt<nShiftFlag;iopt++){
-      if( flagStr == qcTMD_ShiftFlagArray[iopt] ){
+      if( flagStr == qcShiftFlagArray[iopt] ){
 	shfFlag = (qcTMD_ShiftFlag)iopt;
 	break;
       }
     }
-    if(shfFlag==qcShfStr_None) errorQuda("TMDparseShiftFlag: Cannot parse given shift flag, flagStr = %c.\n", flagStr);
+    if(shfFlag==qcShfStr_None) errorQuda("%s: Cannot parse given shift flag, flagStr = %c.\n", __func__, flagStr);
     return shfFlag;
   }
   //---------------------------------------------------------------------------
-  qcTMD_ShiftType TMDparseShiftType(char *typeStr){
+  qcTMD_ShiftType qcParseShiftType(char *typeStr){
     
     qcTMD_ShiftType shfType = qcInvalidShift;
     for(int iopt=0;iopt<nShiftType;iopt++){
-      if( strcmp(typeStr,qcTMD_ShiftTypeArray[iopt])==0 ){
+      if( strcmp(typeStr,qcShiftTypeArray[iopt])==0 ){
 	shfType = (qcTMD_ShiftType)iopt;
 	break;
       }
     }
-    if(shfType==qcInvalidShift) errorQuda("TMDparseShiftType: Cannot parse given shift type, typeStr = %s.\n", typeStr);
+    if(shfType==qcInvalidShift) errorQuda("%s: Cannot parse given shift type, typeStr = %s.\n", __func__, typeStr);
     return shfType;
   }
   //---------------------------------------------------------------------------
-  qcTMD_ShiftDir TMDparseShiftDirection(qcTMD_ShiftFlag shfFlag){
+  qcTMD_ShiftDir qcParseShiftDirection(qcTMD_ShiftFlag shfFlag){
 
     qcTMD_ShiftDir shfDir = qcShfDirNone;
     switch(shfFlag){
@@ -141,13 +127,13 @@ namespace quda {
     case qcShfStr_T: {
       shfDir = qcShfDir_t;
     } break;
-    default: errorQuda("TMDparseShiftDirection: Unsupported shift flag, shfFlag = %c.\n", (shfFlag >=0 && shfFlag<nShiftFlag) ? qcTMD_ShiftFlagArray[(int)shfFlag] : '?');
+    default: errorQuda("%s: Unsupported shift flag, shfFlag = %c.\n", __func__, (shfFlag >=0 && shfFlag<nShiftFlag) ? qcShiftFlagArray[(int)shfFlag] : '?');
     }//-- switch    
 
     return shfDir;
   }
   //---------------------------------------------------------------------------
-  qcTMD_ShiftSgn TMDparseShiftSign(qcTMD_ShiftFlag shfFlag, bool flipShfSgn=false){
+  qcTMD_ShiftSgn qcParseShiftSign(qcTMD_ShiftFlag shfFlag, bool flipShfSgn=false){
 
     qcTMD_ShiftSgn shfSgn = qcShfSgnNone;
     switch(shfFlag){
@@ -165,7 +151,7 @@ namespace quda {
       if(!flipShfSgn) shfSgn = qcShfSgnMinus;
       else shfSgn = qcShfSgnPlus;
     } break;
-    default: errorQuda("TMDparseShiftSign: Unsupported shift flag, shfFlag = %c.\n", (shfFlag >=0 && shfFlag<nShiftFlag) ? qcTMD_ShiftFlagArray[(int)shfFlag] : '?');
+    default: errorQuda("%s: Unsupported shift flag, shfFlag = %c.\n", __func__, (shfFlag >=0 && shfFlag<nShiftFlag) ? qcShiftFlagArray[(int)shfFlag] : '?');
     }//-- switch    
 
     return shfSgn;
@@ -176,7 +162,7 @@ namespace quda {
 
     if( (dst->GhostExchange() != QUDA_GHOST_EXCHANGE_EXTENDED) ||
 	(src->GhostExchange() != QUDA_GHOST_EXCHANGE_EXTENDED) )
-      errorQuda("qcCopyExtendedGaugeField: Support only extended Gauge Fields!\n");
+      errorQuda("%s: Support only extended Gauge Fields!\n", __func__);
 
     copyExtendedGauge(*dst, *src, QUDA_CUDA_FIELD_LOCATION);
     dst->exchangeExtendedGhost(R, QCredundantComms);
@@ -192,7 +178,7 @@ namespace quda {
     cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);
     checkCudaError();
 
-    if(arg.nParity != 2) errorQuda("qcCopyCudaLink: This function supports only Full Site Subset fields!\n");
+    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", __func__);
 
     dim3 blockDim(THREADS_PER_BLOCK, arg.nParity, 1);
     dim3 gridDim((arg.volumeCB + blockDim.x -1)/blockDim.x, 1, 1);
@@ -217,7 +203,7 @@ namespace quda {
     cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);    
     checkCudaError();
 
-    if(arg.nParity != 2) errorQuda("qcResetGaugeToUnity: This function supports only Full Site Subset fields!\n");
+    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", __func__);
 
     dim3 blockDim(THREADS_PER_BLOCK, arg.nParity, 1);
     dim3 gridDim((arg.volumeCB + blockDim.x -1)/blockDim.x, 1, 1);
@@ -282,17 +268,15 @@ namespace quda {
 
   void perform_ShiftCudaVec_nonCov(ColorSpinorField *dst, ColorSpinorField *src, qcTMD_ShiftFlag shfFlag){
 
-    const char *funcname = "perform_ShiftCudaVec_nonCov";
-
-    qcTMD_ShiftDir  shfDir  = TMDparseShiftDirection(shfFlag);
-    qcTMD_ShiftSgn  shfSgn  = TMDparseShiftSign(shfFlag);     
+    qcTMD_ShiftDir  shfDir  = qcParseShiftDirection(shfFlag);
+    qcTMD_ShiftSgn  shfSgn  = qcParseShiftSign(shfFlag);     
     if( ((int)shfSgn>=0 && (int)shfSgn<2) && ((int)shfDir>=0 && (int)shfDir<4)  ){
       if(getVerbosity() >= QUDA_VERBOSE)
 	printfQuda("%s: Will perform an On-Axis Non-Covariant shift in the %s%s direction\n",
-		   funcname, qcTMD_ShiftSgnArray[(int)shfSgn], qcTMD_ShiftDirArray[(int)shfDir]);
+		   __func__, qcShiftSgnArray[(int)shfSgn], qcShiftDirArray[(int)shfDir]);
     }
     else
-      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", funcname);
+      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", __func__);
 
     qcExchangeGhostVec(src);
 
@@ -303,7 +287,7 @@ namespace quda {
     cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);    
     checkCudaError();
 
-    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", funcname);
+    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", __func__);
 
     dim3 blockDim(THREADS_PER_BLOCK, arg.nParity, 1);
     dim3 gridDim((arg.volumeCB + blockDim.x -1)/blockDim.x, 1, 1);
@@ -314,7 +298,7 @@ namespace quda {
     checkCudaError();
     double t2 = MPI_Wtime();
     if(getVerbosity() >= QUDA_VERBOSE)
-      printfQuda("%s: Kernel done in %f sec.\n", funcname, t2-t1);
+      printfQuda("%s: Kernel done in %f sec.\n", __func__, t2-t1);
     
     cudaFree(arg_dev);
     arg_dev = NULL;
@@ -324,17 +308,15 @@ namespace quda {
   void perform_ShiftCudaVec_Cov(ColorSpinorField *dst, ColorSpinorField *src, cudaGaugeField *gf,
 				qcTMD_ShiftFlag shfFlag){
 
-    const char *funcname = "perform_ShiftCudaVec_Cov";
-
-    qcTMD_ShiftDir  shfDir  = TMDparseShiftDirection(shfFlag);
-    qcTMD_ShiftSgn  shfSgn  = TMDparseShiftSign(shfFlag);     
+    qcTMD_ShiftDir  shfDir  = qcParseShiftDirection(shfFlag);
+    qcTMD_ShiftSgn  shfSgn  = qcParseShiftSign(shfFlag);     
     if( ((int)shfSgn>=0 && (int)shfSgn<2) && ((int)shfDir>=0 && (int)shfDir<4)  ){
       if(getVerbosity() >= QUDA_VERBOSE)
 	printfQuda("%s: Will perform an On-Axis Covariant shift in the %s%s direction\n",
-		   funcname, qcTMD_ShiftSgnArray[(int)shfSgn], qcTMD_ShiftDirArray[(int)shfDir]);
+		   __func__, qcShiftSgnArray[(int)shfSgn], qcShiftDirArray[(int)shfDir]);
     }
     else
-      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", funcname);
+      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", __func__);
 
     qcExchangeGhostVec(src);
 
@@ -345,7 +327,7 @@ namespace quda {
     cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);
     checkCudaError();
 
-    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", funcname);
+    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", __func__);
 
     dim3 blockDim(THREADS_PER_BLOCK, arg.nParity, 1);
     dim3 gridDim((arg.volumeCB + blockDim.x -1)/blockDim.x, 1, 1);
@@ -356,7 +338,7 @@ namespace quda {
     checkCudaError();
     double t2 = MPI_Wtime();
     if(getVerbosity() >= QUDA_VERBOSE)
-      printfQuda("%s: Kernel done in %f sec.\n", funcname, t2-t1);
+      printfQuda("%s: Kernel done in %f sec.\n", __func__, t2-t1);
 
     cudaFree(arg_dev);
     arg_dev = NULL;
@@ -366,17 +348,15 @@ namespace quda {
   void perform_ShiftGauge_nonCov(cudaGaugeField *dst, cudaGaugeField *src,
 				 qcTMD_ShiftFlag shfFlag){
 
-    const char *funcname = "perform_ShiftGauge_nonCov";
-
-    qcTMD_ShiftDir  shfDir  = TMDparseShiftDirection(shfFlag);
-    qcTMD_ShiftSgn  shfSgn  = TMDparseShiftSign(shfFlag);     
+    qcTMD_ShiftDir  shfDir  = qcParseShiftDirection(shfFlag);
+    qcTMD_ShiftSgn  shfSgn  = qcParseShiftSign(shfFlag);     
     if( ((int)shfSgn>=0 && (int)shfSgn<2) && ((int)shfDir>=0 && (int)shfDir<4)  ){
       if(getVerbosity() >= QUDA_VERBOSE)
 	printfQuda("%s: Will perform a Gauge Link Non-Covariant shift in the %s%s direction\n",
-		   funcname, qcTMD_ShiftSgnArray[(int)shfSgn], qcTMD_ShiftDirArray[(int)shfDir]);
+		   __func__, qcShiftSgnArray[(int)shfSgn], qcShiftDirArray[(int)shfDir]);
     }
     else
-      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", funcname);
+      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", __func__);
     
     Arg_ShiftGauge_nonCov arg(dst, src);
     Arg_ShiftGauge_nonCov *arg_dev;
@@ -385,7 +365,7 @@ namespace quda {
     cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);
     checkCudaError();
 
-    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", funcname);
+    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", __func__);
 
     dim3 blockDim(THREADS_PER_BLOCK, arg.nParity, 1);
     dim3 gridDim((arg.volumeCB + blockDim.x -1)/blockDim.x, 1, 1);
@@ -396,7 +376,7 @@ namespace quda {
     checkCudaError();
     double t2 = MPI_Wtime();
     if(getVerbosity() >= QUDA_VERBOSE)
-      printfQuda("%s: Kernel done in %f sec.\n", funcname, t2-t1);
+      printfQuda("%s: Kernel done in %f sec.\n", __func__, t2-t1);
 
     dst->exchangeExtendedGhost(dst->R(), QCredundantComms);
 
@@ -408,17 +388,15 @@ namespace quda {
   void perform_ShiftLink_Cov(cudaGaugeField *dst, int i_dst, cudaGaugeField *src, int i_src,
 			     cudaGaugeField *gf, qcTMD_ShiftFlag shfFlag){
 
-    const char *funcname = "perform_ShiftLink_Cov";
-
-    qcTMD_ShiftDir  shfDir  = TMDparseShiftDirection(shfFlag);
-    qcTMD_ShiftSgn  shfSgn  = TMDparseShiftSign(shfFlag);     
+    qcTMD_ShiftDir  shfDir  = qcParseShiftDirection(shfFlag);
+    qcTMD_ShiftSgn  shfSgn  = qcParseShiftSign(shfFlag);     
     if( ((int)shfSgn>=0 && (int)shfSgn<2) && ((int)shfDir>=0 && (int)shfDir<4)  ){
       if(getVerbosity() >= QUDA_VERBOSE)
 	printfQuda("%s: Will perform a Gauge Link Covariant shift in the %s%s direction\n",
-		   funcname, qcTMD_ShiftSgnArray[(int)shfSgn], qcTMD_ShiftDirArray[(int)shfDir]);
+		   __func__, qcShiftSgnArray[(int)shfSgn], qcShiftDirArray[(int)shfDir]);
     }
     else
-      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", funcname);
+      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", __func__);
     
     Arg_ShiftLink_Cov arg(dst, i_dst, src, i_src, gf);
     Arg_ShiftLink_Cov *arg_dev;
@@ -427,7 +405,7 @@ namespace quda {
     cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);
     checkCudaError();
 
-    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", funcname);
+    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", __func__);
 
     dim3 blockDim(THREADS_PER_BLOCK, arg.nParity, 1);
     dim3 gridDim((arg.volumeCB + blockDim.x -1)/blockDim.x, 1, 1);
@@ -438,7 +416,7 @@ namespace quda {
     checkCudaError();
     double t2 = MPI_Wtime();
     if(getVerbosity() >= QUDA_VERBOSE)
-      printfQuda("%s: Kernel done in %f sec.\n", funcname, t2-t1);
+      printfQuda("%s: Kernel done in %f sec.\n", __func__, t2-t1);
 
     dst->exchangeExtendedGhost(dst->R(), QCredundantComms);
 
@@ -451,17 +429,15 @@ namespace quda {
 				     cudaGaugeField *gf, cudaGaugeField *gf2,
 				     qcTMD_ShiftFlag shfFlag, bool flipShfSgn){
 
-    const char *funcname = "perform_ShiftLink_AdjSplitCov";
-
-    qcTMD_ShiftDir  shfDir  = TMDparseShiftDirection(shfFlag);
-    qcTMD_ShiftSgn  shfSgn  = TMDparseShiftSign(shfFlag, flipShfSgn);
+    qcTMD_ShiftDir  shfDir  = qcParseShiftDirection(shfFlag);
+    qcTMD_ShiftSgn  shfSgn  = qcParseShiftSign(shfFlag, flipShfSgn);
     if( ((int)shfSgn>=0 && (int)shfSgn<2) && ((int)shfDir>=0 && (int)shfDir<4)  ){
       if(getVerbosity() >= QUDA_VERBOSE)
 	printfQuda("%s: Will perform a Gauge Link AdjSplitCov shift in the %s%s direction\n",
-		   funcname, qcTMD_ShiftSgnArray[(int)shfSgn], qcTMD_ShiftDirArray[(int)shfDir]);
+		   __func__, qcShiftSgnArray[(int)shfSgn], qcShiftDirArray[(int)shfDir]);
     }
     else
-      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", funcname);
+      errorQuda("%s: Got invalid shfDir and/or shfSgn.\n", __func__);
     
     Arg_ShiftLink_AdjSplitCov arg(dst, i_dst, src, i_src, gf, gf2);
     Arg_ShiftLink_AdjSplitCov *arg_dev;
@@ -470,7 +446,7 @@ namespace quda {
     cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);
     checkCudaError();
 
-    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", funcname);
+    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset fields!\n", __func__);
 
     dim3 blockDim(THREADS_PER_BLOCK, arg.nParity, 1);
     dim3 gridDim((arg.volumeCB + blockDim.x -1)/blockDim.x, 1, 1);
@@ -481,7 +457,7 @@ namespace quda {
     checkCudaError();
     double t2 = MPI_Wtime();
     if(getVerbosity() >= QUDA_VERBOSE)
-      printfQuda("%s: Kernel done in %f sec.\n", funcname, t2-t1);
+      printfQuda("%s: Kernel done in %f sec.\n", __func__, t2-t1);
 
     dst->exchangeExtendedGhost(dst->R(), QCredundantComms);
 
@@ -506,18 +482,18 @@ namespace quda {
     
     long long flops() const{
       long long flopCnt = 0;
-      if(cntrType == what_tmd_g_F_B)    flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*(1+Nc*Ns) * 8 + Ns*Ns*Ns * 2);
-      if(cntrType == what_qbarq_g_F_aB) flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*Ns * 8 + Ns*Ns*Ns * 2);
-      if(cntrType == what_qpdf_g_F_B)   flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*Ns * 8 + Ns*Ns*Ns * 2);
-      if(cntrType == what_bb_g_F_B)     flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*Ns * 8 + Ns*Ns*Ns * 2);
+      if(cntrType == what_tmd_g_F_B)  flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*(1+Nc*Ns) * 8 + Ns*Ns*Ns * 2);
+      if((cntrType == what_qbarq_g_F_aB) ||
+	 (cntrType == what_qpdf_g_F_B)   ||
+	 (cntrType == what_bb_g_F_B)) flopCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (Nc*Nc*Ns*Ns*Ns * 8 + Ns*Ns*Ns * 2);
       return flopCnt;
     }
     long long bytes() const{
       long long byteCnt = 0;
-      if(cntrType == what_tmd_g_F_B)    byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc + Nc*Nc) * 2*8;
-      if(cntrType == what_qbarq_g_F_aB) byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc) * 2*8;
-      if(cntrType == what_qpdf_g_F_B)   byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc) * 2*8;
-      if(cntrType == what_bb_g_F_B)     byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc) * 2*8;
+      if(cntrType == what_tmd_g_F_B)  byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc + Nc*Nc) * 2*8;
+      if((cntrType == what_qbarq_g_F_aB) ||
+	 (cntrType == what_qpdf_g_F_B)   ||
+	 (cntrType == what_bb_g_F_B)) byteCnt = (long long)meta->VolumeCB() * meta->SiteSubset() * (2*Ns*Ns*Nc*Nc) * 2*8;
       return byteCnt;
     }
     bool tuneGridDim() const { return false; }
@@ -596,15 +572,13 @@ namespace quda {
 			    cudaColorSpinorField **cudaProp3,
 			    complex<QUDA_REAL> *S2, complex<QUDA_REAL> *S1,
 			    qudaAPI_Param paramAPI){    
-
-    const char *func_name = "QuarkContract_uLocal";
     
-    if(typeid(QC_REAL) != typeid(QUDA_REAL)) errorQuda("%s: QUDA_REAL and QC_REAL type mismatch!\n", func_name);
+    if(typeid(QC_REAL) != typeid(QUDA_REAL)) errorQuda("%s: QUDA_REAL and QC_REAL type mismatch!\n", __func__);
 
     if( (paramAPI.mpParam.cntrType == what_tmd_g_F_B)  ||
 	(paramAPI.mpParam.cntrType == what_qpdf_g_F_B) ||
 	(paramAPI.mpParam.cntrType == what_bb_g_F_B) )
-      errorQuda("%s: Contraction type %s not supported!\n", func_name, qc_contractTypeStr[paramAPI.mpParam.cntrType]);
+      errorQuda("%s: Contraction type %s not supported!\n", __func__, qcContractTypeStr[paramAPI.mpParam.cntrType]);
 
     QluaContractArg arg(cudaProp1, cudaProp2, cudaProp3, paramAPI.mpParam.cntrType, paramAPI.preserveBasis, paramAPI.mpParam.nVec); 
     QluaContractArg *arg_dev;
@@ -613,7 +587,7 @@ namespace quda {
     cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);    
     checkCudaError();
 
-    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset spinors!\n", func_name);
+    if(arg.nParity != 2) errorQuda("%s: This function supports only Full Site Subset spinors!\n", __func__);
     if(paramAPI.mpParam.cntrType == what_baryon_sigma_UUS) qcCopySmatricesToSymbol(S2, S1);
     if(paramAPI.mpParam.cntrType == what_qbarq_g_F_aB) qcCopyGammaToConstMem();
 
@@ -629,12 +603,12 @@ namespace quda {
       qbarq_g_P_P_gvec_kernel<<<gridDim,blockDim>>>(corrQuda_dev, arg_dev);
     } break;
     case what_qbarq_g_F_aB: {
-      if(!arg.preserveBasis) errorQuda("%s: qbarq_g_P_aP_gvec kernel supports only QUDA_UKQCD_GAMMA_BASIS!\n", func_name);
+      if(!arg.preserveBasis) errorQuda("%s: qbarq_g_P_aP_gvec kernel supports only QUDA_UKQCD_GAMMA_BASIS!\n", __func__);
       quarkContract qbarq_gPaP(cudaProp1[0], (void*)arg_dev, corrQuda_dev, arg.cntrType, 
 			       QC_THREADS_PER_SITE, QC_TMD_SHMEM_PER_SITE);    
       if(getVerbosity() >= QUDA_DEBUG_VERBOSE){
-	printfQuda("%s: qbarq_gPaP::Flops = %lld\n", func_name, qbarq_gPaP.getFlops());
-	printfQuda("%s: qbarq_gPaP::Bytes = %lld\n", func_name, qbarq_gPaP.getBytes());
+	printfQuda("%s: qbarq_gPaP::Flops = %lld\n", __func__, qbarq_gPaP.getFlops());
+	printfQuda("%s: qbarq_gPaP::Bytes = %lld\n", __func__, qbarq_gPaP.getBytes());
       }
       qbarq_gPaP.apply(0);
       cudaDeviceSynchronize();
@@ -652,12 +626,12 @@ namespace quda {
     case what_meson_F_hB: {
       meson_F_hB_gvec_kernel<<<gridDim,blockDim>>>(corrQuda_dev, arg_dev);
     } break;
-    default: errorQuda("%s: Contraction type %s not implemented!\n", func_name, qc_contractTypeStr[arg.cntrType]);
+    default: errorQuda("%s: Contraction type %s not implemented!\n", __func__, qcContractTypeStr[arg.cntrType]);
     }//- switch
     cudaDeviceSynchronize();
     checkCudaError();
     double t2 = MPI_Wtime();
-    printfQuda("TIMING - %s: Contraction kernel %s finished in %f sec.\n", func_name, qc_contractTypeStr[arg.cntrType], t2-t1);
+    printfQuda("TIMING - %s: Contraction kernel %s finished in %f sec.\n", __func__, qcContractTypeStr[arg.cntrType], t2-t1);
 
     cudaFree(arg_dev);
   }//-- QuarkContract_uLocal
@@ -665,12 +639,10 @@ namespace quda {
 
 
   //-Top-level function
-  void QuarkContract_TMD_QPDF(QuarkTMD_state *qcs){
-
-    const char *func_name = "QuarkContract_TMD_QPDF";
+  void QuarkContract_TMD_QPDF(QuarkContractState *qcs){
 
     if( (qcs->cntrType != what_tmd_g_F_B) && (qcs->cntrType != what_qpdf_g_F_B) && (qcs->cntrType != what_bb_g_F_B) )
-      errorQuda("%s: This function supports only TMD, BB and PDF contractions!\n", func_name);
+      errorQuda("%s: This function supports only TMD, BB and PDF contractions!\n", __func__);
 
     if(qcs->cntrType == what_tmd_g_F_B){
       qcTMD_Arg arg(qcs->cudaPropFrw_bsh, qcs->cudaPropBkw, qcs->wlinks, qcs->i_wl_vbv, qcs->paramAPI.preserveBasis, qcs->nVec);    
@@ -679,15 +651,15 @@ namespace quda {
       checkCudaError();
       cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);    
       checkCudaError();    
-      if(arg.nParity != 2)   errorQuda("%s: This function supports only Full Site Subset fields!\n", func_name);
-      if(!arg.preserveBasis) errorQuda("%s: TMD kernel supports only QUDA_UKQCD_GAMMA_BASIS!\n", func_name);
+      if(arg.nParity != 2)   errorQuda("%s: This function supports only Full Site Subset fields!\n", __func__);
+      if(!arg.preserveBasis) errorQuda("%s: TMD kernel supports only QUDA_UKQCD_GAMMA_BASIS!\n", __func__);
 
       quarkContract contractTMD(qcs->cudaPropBkw[0], (void*)arg_dev, qcs->corrQuda_dev, qcs->cntrType, 
 				QC_THREADS_PER_SITE, QC_TMD_SHMEM_PER_SITE);
 
       if(getVerbosity() >= QUDA_DEBUG_VERBOSE){
-	printfQuda("%s: contractTMD::Flops = %lld\n", func_name, contractTMD.getFlops());
-	printfQuda("%s: contractTMD::Bytes = %lld\n", func_name, contractTMD.getBytes());
+	printfQuda("%s: contractTMD::Flops = %lld\n", __func__, contractTMD.getFlops());
+	printfQuda("%s: contractTMD::Bytes = %lld\n", __func__, contractTMD.getBytes());
       }
 
       double t1 = MPI_Wtime();
@@ -695,7 +667,7 @@ namespace quda {
       cudaDeviceSynchronize();
       checkCudaError();
       double t2 = MPI_Wtime();
-      if(getVerbosity() >= QUDA_VERBOSE) printfQuda("TIMING - %s: Contraction kernel %s finished in %f sec.\n", func_name, qc_contractTypeStr[qcs->cntrType], t2-t1);
+      if(getVerbosity() >= QUDA_VERBOSE) printfQuda("TIMING - %s: Contraction kernel %s finished in %f sec.\n", __func__, qcContractTypeStr[qcs->cntrType], t2-t1);
       cudaFree(arg_dev);
     }
     else{
@@ -709,15 +681,15 @@ namespace quda {
       checkCudaError();
       cudaMemcpy(arg_dev, &arg, sizeof(arg), cudaMemcpyHostToDevice);    
       checkCudaError();
-      if(arg.nParity != 2)   errorQuda("%s: This function supports only Full Site Subset spinors!\n", func_name);
-      if(!arg.preserveBasis) errorQuda("%s: qPDF kernel supports only QUDA_UKQCD_GAMMA_BASIS!\n", func_name);
+      if(arg.nParity != 2)   errorQuda("%s: This function supports only Full Site Subset spinors!\n", __func__);
+      if(!arg.preserveBasis) errorQuda("%s: qPDF kernel supports only QUDA_UKQCD_GAMMA_BASIS!\n", __func__);
 
       quarkContract qbarq_gPaP(qcs->cudaPropBkw[0], (void*)arg_dev, qcs->corrQuda_dev, qcs->cntrType, 
 			       QC_THREADS_PER_SITE, QC_TMD_SHMEM_PER_SITE);
 
       if(getVerbosity() >= QUDA_DEBUG_VERBOSE){
-	printfQuda("%s: qbarq_gPaP::Flops = %lld\n", func_name, qbarq_gPaP.getFlops());
-	printfQuda("%s: qbarq_gPaP::Bytes = %lld\n", func_name, qbarq_gPaP.getBytes());
+	printfQuda("%s: qbarq_gPaP::Flops = %lld\n", __func__, qbarq_gPaP.getFlops());
+	printfQuda("%s: qbarq_gPaP::Bytes = %lld\n", __func__, qbarq_gPaP.getBytes());
       }
 
       double t1 = MPI_Wtime();
@@ -725,8 +697,9 @@ namespace quda {
       cudaDeviceSynchronize();
       checkCudaError();
       double t2 = MPI_Wtime();
-      if(getVerbosity() >= QUDA_VERBOSE) printfQuda("TIMING - %s: Contraction kernel %s finished in %f sec.\n", func_name, qc_contractTypeStr[qcs->cntrType], t2-t1);
+      if(getVerbosity() >= QUDA_VERBOSE) printfQuda("TIMING - %s: Contraction kernel %s finished in %f sec.\n", __func__, qcContractTypeStr[qcs->cntrType], t2-t1);
       cudaFree(arg_dev);
+      frwProp = NULL;
     }
 
   }//-- QuarkContract_TMD_QPDF

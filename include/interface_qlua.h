@@ -37,7 +37,7 @@ typedef double QUDA_REAL;
 #define PI 2*asin(1.0)
 #define THREADS_PER_BLOCK 64
 
-extern const char *qc_contractTypeStr[QUDA_NTYPE_CONTRACT];
+extern const char *qcContractTypeStr[QUDA_NTYPE_CONTRACT];
 
 typedef enum qluaCntrQQ_Id_s{
   cntr12 = 12,
