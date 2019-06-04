@@ -21,17 +21,6 @@
 using namespace quda;
 
 //- Global variables
-const int nShiftFlag = 20;
-const int nShiftType = 3;
-
-const char *qcShiftFlagArray = "XxYyZzTtQqRrSsUuVvWw" ;
-const char *qcShiftTypeArray[] = {"Covariant",
-				  "Non-Covariant",
-				  "AdjSplitCov"};
-
-const char *qcShiftDirArray[] = {"x", "y", "z", "t"};
-const char *qcShiftSgnArray[] = {"-", "+"};
-
 const char *qcContractTypeStr[QUDA_NTYPE_CONTRACT] = {
   "none",
   "qbarq_g_F_B",
@@ -1221,11 +1210,6 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
     qudaGauge_host[mu] = (static_cast<QUDA_REAL*>(qluaGauge_host[mu]));
 
 
-  if(paramAPI.mpParam.GPU_phaseMatrix != 1){
-    warningQuda("%s: Got GPU_phaseMatrix != 1. Overriding, will create phase matrix on GPU!\n", __func__);
-    paramAPI.mpParam.GPU_phaseMatrix = 1;
-  }
-
   //-- Define useful topology quantities, put them in paramAPI
   int nDim = qS->rank;
   int momDim = nDim - 1;
@@ -1247,24 +1231,23 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   paramAPI.mpParam.V3     = V3;
   paramAPI.mpParam.totV3  = totV3;
 
-  if(paramAPI.mpParam.tAxis != QUDA_TIME_AXIS)
-    errorQuda("%s: Time-axis between Quda-Qlua does not agree! Exiting.\n", __func__);
-  if(paramAPI.mpParam.totalL[QUDA_TIME_AXIS] != paramAPI.mpParam.Tdim)
-    errorQuda("%s: Time-dimension between Quda-Qlua does not agree! Exiting.\n", __func__);
   if(paramAPI.mpParam.locvol != Qlocvol)
     errorQuda("%s: Local volume between Quda-Qlua does not agree! Exiting.\n", __func__);
-  if(paramAPI.mpParam.expSgn != 1 && paramAPI.mpParam.expSgn != -1)
-    errorQuda("%s: Got invalid exponential sign, expSgn = %d!\n", __func__, paramAPI.mpParam.expSgn);
-
-  int nVec = paramAPI.mpParam.nVec;
   //-------------------------------------------------------------
 
   
   //-- Load the parameters required for the ColorSpinorFields and GaugeFields
+  int nVec = paramAPI.mpParam.nVec;
   bool preserveBasis = paramAPI.preserveBasis == 1 ? true : false;
   bool qdp2quda = paramAPI.qdp2quda == 1 ? true : false;
   int Nc = QUDA_Nc;
   int Ns = QUDA_Ns;
+  int tAxis = QUDA_TIME_AXIS;
+  int Ndata = paramAPI.mpParam.Ndata;
+  int locT  = paramAPI.mpParam.localL[tAxis];
+  int totT  = paramAPI.mpParam.totalL[tAxis];
+  LONG_T locvol = paramAPI.mpParam.locvol;
+  size_t SizeCplxReal = sizeof(complex<QUDA_REAL>);
 
   QudaGaugeParam gp;
   int tBoundaryGauge = -1;
@@ -1275,11 +1258,12 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   setVerbosity(paramAPI.verbosity);
 
   //-- Initialize generic variables of qcs
-  qcs->iStep    = 0;
-  qcs->cntrType = paramAPI.mpParam.cntrType;
-  qcs->push_res = paramAPI.mpParam.push_res;
-  qcs->nVec     = paramAPI.mpParam.nVec;
-  qcs->paramAPI = paramAPI;
+  qcs->iStep     = 0;
+  qcs->cntrType  = paramAPI.mpParam.cntrType;
+  qcs->push_res  = paramAPI.mpParam.push_res;
+  qcs->nVec      = paramAPI.mpParam.nVec;
+  qcs->paramAPI  = paramAPI;
+  qcs->doMomProj = paramAPI.mpParam.doMomProj;
 
   //- Setup the indices of the wlinks Color-Matrices, TMD-related
   qcs->i_wl_b   = 0;
@@ -1299,34 +1283,6 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   qcs->bb_lpath_stk[0][0] = '\0';
   qcs->bb_cur_depth = 0;
   qcs->bb_zerolink_done = 0;
-
-  //-- Print parameters
-  printfQuda("%s:\n", __func__);
-  printfQuda("  Got nVec     = %d\n", nVec);
-  printfQuda("  Got local lattice (x,y,z,t) = (%d,%d,%d,%d)\n",
-	     paramAPI.mpParam.localL[0], paramAPI.mpParam.localL[1],
-	     paramAPI.mpParam.localL[2], paramAPI.mpParam.localL[3]);
-  printfQuda("  Got global lattice (x,y,z,t) = (%d,%d,%d,%d)\n",
-	     paramAPI.mpParam.totalL[0], paramAPI.mpParam.totalL[1],
-	     paramAPI.mpParam.totalL[2], paramAPI.mpParam.totalL[3]);
-  printfQuda("  Got source-coords (x,y,z,t) = (%d,%d,%d,%d)\n",
-	     paramAPI.mpParam.csrc[0], paramAPI.mpParam.csrc[1],
-	     paramAPI.mpParam.csrc[2], paramAPI.mpParam.csrc[3]);
-  printfQuda("  Got cntrType = %s\n"  , qcContractTypeStr[qcs->cntrType]);
-  printfQuda("  Got locvol   = %lld\n", paramAPI.mpParam.locvol);
-  printfQuda("  Got V3       = %lld\n", paramAPI.mpParam.V3);
-  printfQuda("  Got totV3    = %lld\n", paramAPI.mpParam.totV3);
-  printfQuda("  Got t_axis   = %d\n",   paramAPI.mpParam.tAxis);
-  printfQuda("  Got Tdim     = %d\n",   paramAPI.mpParam.Tdim);
-  printfQuda("  Got Nmoms    = %d\n",   paramAPI.mpParam.Nmoms);
-  printfQuda("  Got Ndata    = %d\n",   paramAPI.mpParam.Ndata);
-  printfQuda("  Got bc_t     = %f\n",   paramAPI.mpParam.bc_t);
-  printfQuda("  Got expSgn   = %+d\n",  paramAPI.mpParam.expSgn);
-  printfQuda("  Got push_r   = %s\n",   paramAPI.mpParam.push_res == 1 ? "YES" : "NO");
-  if(qcs->cntrType == what_bb_g_F_B)
-    printfQuda("  Got Maxdepth = %d\n", paramAPI.mpParam.bb_max_depth);
-  printfQuda("  Will create phase matrix on %s\n", paramAPI.mpParam.GPU_phaseMatrix == 1 ? "GPU" : "CPU");
-  printfQuda("%s: Invert-Gauge-Generic parameters set!\n", __func__);
   //-------------------------------------------------------------
 
   if(getVerbosity() >= QUDA_VERBOSE){
@@ -1436,16 +1392,6 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   printfQuda("TIMING - %s: Cuda Color-Spinor fields for %s loaded in %f sec.\n", __func__, qcContractTypeStr[qcs->cntrType], t4-t3);
   //-------------------------------------------------------------
 
-
-  //----- Allocate and create correlator and momentum-projection related buffers -----//
-  LONG_T locvol = paramAPI.mpParam.locvol;
-  int tAxis = paramAPI.mpParam.tAxis;
-  int locT  = paramAPI.mpParam.localL[tAxis];
-  int totT  = paramAPI.mpParam.totalL[tAxis];
-  int Ndata = paramAPI.mpParam.Ndata;
-  int Nmoms = paramAPI.mpParam.Nmoms;
-  size_t SizeCplxReal = sizeof(complex<QUDA_REAL>);
-
   //- Create a utility structure (required in momentum projection as well). Passing Ndata twice is NOT a bug!
   if( (qcs->cntrType == what_qpdf_g_F_B) || (qcs->cntrType == what_tmd_g_F_B) )
     qcs->utilArg = new QluaUtilArg(qcs->cudaPropFrw_bsh, Ndata, Ndata, tAxis, SizeCplxReal);
@@ -1460,39 +1406,93 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   else if (crdChkVal == 0) printfQuda("%s: Site order check PASSED.\n", __func__);
   //-------------------------------------------------------------
 
-
-  //- Host/Device correlator in position space
+  //- Device correlator in position space
   LONG_T corrLgh = locvol * Ndata;
   size_t corrByteSize = SizeCplxReal * corrLgh;
   cudaMalloc((void**)&(qcs->corrQuda_dev), corrByteSize);
   checkCudaError();
   cudaMemset(qcs->corrQuda_dev, 0, corrByteSize);
 
-  //- Phase matrix
-  size_t pMSize = SizeCplxReal * V3 * Nmoms;
-  cudaMalloc( (void**)&(qcs->phaseMatrix_dev), pMSize);
-  checkCudaError();
-  cudaMemset(qcs->phaseMatrix_dev, 0, pMSize);
-  createPhaseMatrix_GPU(qcs->phaseMatrix_dev, momlist, paramAPI.mpParam);
-  printfQuda("%s: Phase matrix created.\n", __func__);
-
-  //-- Prepare momentum projection buffers
-  qcs->corrOut_proj = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*totT, SizeCplxReal); //-- Final result (global summed, gathered) of momentum projection
-  qcs->corrOut_glob = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*locT, SizeCplxReal); //-- Globally summed momentum projection buffer		     
-  qcs->corrOut_host = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*locT, SizeCplxReal); //-- Host (local) output of cuBlas momentum projection
-  if((qcs->corrOut_proj == NULL) || (qcs->corrOut_glob == NULL) || (qcs->corrOut_host == NULL))
-    errorQuda("%s: Cannot allocate Mom-Proj Output correlation function buffers.\n", __func__);
-
-  cudaMalloc( (void**)&(qcs->corrInp_dev), SizeCplxReal*V3*Ndata*locT);
-  cudaMalloc( (void**)&(qcs->corrOut_dev), SizeCplxReal*Nmoms*Ndata*locT);
-  checkCudaError();
-  cudaMemset(qcs->corrInp_dev, 0, SizeCplxReal*V3*Ndata*locT);
-  cudaMemset(qcs->corrOut_dev, 0, SizeCplxReal*Nmoms*Ndata*locT);
-  printfQuda("%s: Momentum projection buffers allocated.\n", __func__);
-  //-------------------------------------------------------------
-
   //- Copy the gamma matrix related objects to __constant__ GPU memory
   qcCopyGammaToConstMem();
+
+  //-- Print Generic parameters
+  printfQuda("%s - Generic Parameters:\n", __func__);
+  printfQuda("  local lattice (x,y,z,t) = (%d,%d,%d,%d)\n",
+	     paramAPI.mpParam.localL[0], paramAPI.mpParam.localL[1],
+	     paramAPI.mpParam.localL[2], paramAPI.mpParam.localL[3]);
+  printfQuda("  global lattice (x,y,z,t) = (%d,%d,%d,%d)\n",
+	     paramAPI.mpParam.totalL[0], paramAPI.mpParam.totalL[1],
+	     paramAPI.mpParam.totalL[2], paramAPI.mpParam.totalL[3]);
+  printfQuda("  nVec     = %d\n", nVec);
+  printfQuda("  cntrType = %s\n"  , qcContractTypeStr[qcs->cntrType]);
+  printfQuda("  locvol   = %lld\n", paramAPI.mpParam.locvol);
+  printfQuda("  V3       = %lld\n", paramAPI.mpParam.V3);
+  printfQuda("  totV3    = %lld\n", paramAPI.mpParam.totV3);
+  printfQuda("  Ndata    = %d\n",   paramAPI.mpParam.Ndata);
+  printfQuda("  push_r   = %s\n",   paramAPI.mpParam.push_res == 1 ? "YES" : "NO");
+  if(qcs->cntrType == what_bb_g_F_B) printfQuda("  Maxdepth = %d\n", paramAPI.mpParam.bb_max_depth);
+  //-------------------------------------------------------------
+
+
+  //- Momentum Projection related buffers
+  if(qcs->doMomProj){
+    printfQuda("%s: Will perform Momentum Projection!\n", __func__);
+    if(paramAPI.mpParam.GPU_phaseMatrix != 1){
+      warningQuda("%s: Got GPU_phaseMatrix != 1. Overriding, will create phase matrix on GPU!\n", __func__);
+      paramAPI.mpParam.GPU_phaseMatrix = 1;
+    }
+    else printfQuda("%s: Will create phase matrix on GPU\n", __func__);
+
+    if(paramAPI.mpParam.totalL[QUDA_TIME_AXIS] != paramAPI.mpParam.Tdim)
+      errorQuda("%s: Time-dimension between Quda-Qlua does not agree! Exiting.\n", __func__);
+    if(paramAPI.mpParam.tAxis != QUDA_TIME_AXIS)
+      errorQuda("%s: Time-axis between Quda-Qlua does not agree! Exiting.\n", __func__);
+    if(paramAPI.mpParam.expSgn != 1 && paramAPI.mpParam.expSgn != -1)
+      errorQuda("%s: Got invalid exponential sign, expSgn = %d!\n", __func__, paramAPI.mpParam.expSgn);
+    
+    //- Create phase matrix
+    if(momlist == NULL) errorQuda("%s: Got momlist = NULL.\n", __func__);
+
+    int Nmoms = paramAPI.mpParam.Nmoms;
+    size_t pMSize = SizeCplxReal * V3 * Nmoms;
+    cudaMalloc( (void**)&(qcs->phaseMatrix_dev), pMSize);
+    checkCudaError();
+    cudaMemset(qcs->phaseMatrix_dev, 0, pMSize);
+    createPhaseMatrix_GPU(qcs->phaseMatrix_dev, momlist, paramAPI.mpParam);
+    printfQuda("%s: Phase matrix created.\n", __func__);
+
+    //-- Prepare host momentum projection buffers
+    qcs->corrOut_proj = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*totT, SizeCplxReal); //-- Final result (global summed, gathered) of momentum projection
+    qcs->corrOut_glob = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*locT, SizeCplxReal); //-- Globally summed momentum projection buffer		     
+    qcs->corrOut_host = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*locT, SizeCplxReal); //-- Host (local) output of cuBlas momentum projection
+    if((qcs->corrOut_proj == NULL) || (qcs->corrOut_glob == NULL) || (qcs->corrOut_host == NULL))
+      errorQuda("%s: Cannot allocate Host Momentum Projection output correlation function buffers.\n", __func__);
+
+    //-- Prepare device momentum projection buffers
+    cudaMalloc( (void**)&(qcs->corrInp_dev), SizeCplxReal*V3*Ndata*locT);
+    cudaMalloc( (void**)&(qcs->corrOut_dev), SizeCplxReal*Nmoms*Ndata*locT);
+    checkCudaError();
+    cudaMemset(qcs->corrInp_dev, 0, SizeCplxReal*V3*Ndata*locT);
+    cudaMemset(qcs->corrOut_dev, 0, SizeCplxReal*Nmoms*Ndata*locT);
+    printfQuda("%s: Host/Device Momentum projection buffers allocated.\n", __func__);
+
+    //-- Print Momentum projection parameters
+    printfQuda("%s - Momentum projection Parameters:\n", __func__);
+    printfQuda("  source-coords (x,y,z,t) = (%d,%d,%d,%d)\n",
+	       paramAPI.mpParam.csrc[0], paramAPI.mpParam.csrc[1],
+	       paramAPI.mpParam.csrc[2], paramAPI.mpParam.csrc[3]);
+    printfQuda("  Nmoms    = %d\n",   paramAPI.mpParam.Nmoms);
+    printfQuda("  expSgn   = %+d\n",  paramAPI.mpParam.expSgn);
+    printfQuda("  Tdim     = %d\n",   paramAPI.mpParam.Tdim);
+    printfQuda("  t_axis   = %d\n",   paramAPI.mpParam.tAxis);
+    printfQuda("  bc_t     = %f\n",   paramAPI.mpParam.bc_t);
+  }
+  else{
+    printfQuda("%s: Will NOT perform Momentum Projection!\n", __func__);
+    if(!qcs->push_res)  warningQuda("%s: Will NOT return any buffer after contractions are done! (Got push_res=0 and doMomProj=0)\n", __func__);
+  }
+  //-------------------------------------------------------------
 
 
   if(getVerbosity() >= QUDA_VERBOSE){
@@ -1567,23 +1567,27 @@ TMD_QPDF_freeState_Quda(void **Vqcs){
   }
   
   //- Delete correlators and momentum-projection related buffers
-  cudaFree(qcs->phaseMatrix_dev);
   cudaFree(qcs->corrQuda_dev);
-  cudaFree(qcs->corrInp_dev);
-  cudaFree(qcs->corrOut_dev);
-  cudaDeviceSynchronize();
-  checkCudaError();
-  qcs->phaseMatrix_dev = NULL;
   qcs->corrQuda_dev = NULL;
-  qcs->corrInp_dev = NULL;
-  qcs->corrOut_dev = NULL;
+  if(qcs->doMomProj){
+    //- Device buffers
+    cudaFree(qcs->phaseMatrix_dev);
+    cudaFree(qcs->corrInp_dev);
+    cudaFree(qcs->corrOut_dev);
+    cudaDeviceSynchronize();
+    checkCudaError();
+    qcs->phaseMatrix_dev = NULL;
+    qcs->corrInp_dev = NULL;
+    qcs->corrOut_dev = NULL;
 
-  free(qcs->corrOut_proj);
-  free(qcs->corrOut_glob);
-  free(qcs->corrOut_host);
-  qcs->corrOut_proj = NULL;
-  qcs->corrOut_glob = NULL;
-  qcs->corrOut_host = NULL;
+    //-Host buffers
+    free(qcs->corrOut_proj);
+    free(qcs->corrOut_glob);
+    free(qcs->corrOut_host);
+    qcs->corrOut_proj = NULL;
+    qcs->corrOut_glob = NULL;
+    qcs->corrOut_host = NULL;
+  }
 
   delete qcs->utilArg;
 
@@ -1741,17 +1745,21 @@ TMDstep_momProj_Quda(void *Vqcs,
   printfQuda("TIMING - %s: Function QuarkContract_TMD_QPDF done in %f sec.\n", __func__, t10-t9);
 
   //- Perform Momentum Projection
-  double t11 = MPI_Wtime();
-  int mpStat = momProjCorr_TMD_QPDF(qcs, momproj_buf);
-  if(mpStat != 0) {
-    errorQuda("mpStat=%d\n", mpStat);
-    return 1;
+  if(qcs->doMomProj){
+    if(momproj_buf == NULL) errorQuda("%s: Momentum-projection buffer not allocated!\n", __func__);
+    double t11 = MPI_Wtime();
+    int mpStat = momProjCorr_TMD_QPDF(qcs, momproj_buf);
+    if(mpStat != 0) {
+      errorQuda("mpStat=%d\n", mpStat);
+      return 1;
+    }
+    double t12 = MPI_Wtime();
+    printfQuda("TIMING - %s: Function momProjCorr_TMD_QPDF done in %f sec.\n", __func__, t12-t11);
   }
-  double t12 = MPI_Wtime();
-  printfQuda("TIMING - %s: Function momProjCorr_TMD_QPDF done in %f sec.\n", __func__, t12-t11);
 
   //-- Copy the position space correlator back to CPU if required
   if(qcs->push_res){
+    if(corrQuda == NULL) errorQuda("%s: Position-space correlator buffer not allocated!\n", __func__);
     double t24 = MPI_Wtime();
     LONG_T lV = qcs->paramAPI.mpParam.locvol;
     int Ndata = qcs->paramAPI.mpParam.Ndata;
@@ -1845,17 +1853,21 @@ QPDFstep_momProj_Quda(void *Vqcs,
   printfQuda("TIMING - %s: Function QuarkContract_TMD_QPDF done in %f sec.\n", __func__, t10-t9);
 
   //- Perform Momentum Projection
-  double t11 = MPI_Wtime();
-  int mpStat = momProjCorr_TMD_QPDF(qcs, momproj_buf);
-  if(mpStat != 0) {
-    errorQuda("mpStat=%d\n", mpStat);
-    return 1;
+  if(qcs->doMomProj){
+    if(momproj_buf == NULL) errorQuda("%s: Momentum-projection buffer not allocated!\n", __func__);
+    double t11 = MPI_Wtime();
+    int mpStat = momProjCorr_TMD_QPDF(qcs, momproj_buf);
+    if(mpStat != 0) {
+      errorQuda("mpStat=%d\n", mpStat);
+      return 1;
+    }
+    double t12 = MPI_Wtime();
+    printfQuda("TIMING - %s: Function momProjCorr_TMD_QPDF done in %f sec.\n", __func__, t12-t11);
   }
-  double t12 = MPI_Wtime();
-  printfQuda("TIMING - %s: Function momProjCorr_TMD_QPDF done in %f sec.\n", __func__, t12-t11);
 
   //-- Copy the position space correlator back to CPU if required
   if(qcs->push_res){
+    if(corrQuda == NULL) errorQuda("%s: Position-space correlator buffer not allocated!\n", __func__);
     double t24 = MPI_Wtime();
     LONG_T lV = qcs->paramAPI.mpParam.locvol;
     int Ndata = qcs->paramAPI.mpParam.Ndata;
@@ -1929,9 +1941,6 @@ BBstep_momProj_Quda(void *Vqcs,
   
   /* build up b_lpath */
   if ( '\0' != *b_lpath_inc) {
-   // (*cur_lpath != '\0') || (*b_lpath != '\0')){
-    printfQuda("### Got into *cur_lpath != 0 !!!\n");
-
     for (int first_c = 1 ; *b_lpath_inc ; b_lpath_inc++, first_c = 0) {
       char c = *b_lpath_inc;
       qcTMD_ShiftFlag shfFlag = qcParseShiftFlag(c);
@@ -1984,17 +1993,21 @@ BBstep_momProj_Quda(void *Vqcs,
   printfQuda("TIMING - %s: Function QuarkContract_TMD_QPDF done in %f sec.\n", __func__, t10-t9);
 
   //- Perform Momentum Projection
-  double t11 = MPI_Wtime();
-  int mpStat = momProjCorr_TMD_QPDF(qcs, momproj_buf);
-  if(mpStat != 0) {
-    errorQuda("mpStat=%d\n", mpStat);
-    return 1;
+  if(qcs->doMomProj){
+    if(momproj_buf == NULL) errorQuda("%s: Momentum-projection buffer not allocated!\n", __func__);
+    double t11 = MPI_Wtime();
+    int mpStat = momProjCorr_TMD_QPDF(qcs, momproj_buf);
+    if(mpStat != 0) {
+      errorQuda("mpStat=%d\n", mpStat);
+      return 1;
+    }
+    double t12 = MPI_Wtime();
+    printfQuda("TIMING - %s: Function momProjCorr_TMD_QPDF done in %f sec.\n", __func__, t12-t11);
   }
-  double t12 = MPI_Wtime();
-  printfQuda("TIMING - %s: Function momProjCorr_TMD_QPDF done in %f sec.\n", __func__, t12-t11);
 
   //-- Copy the position space correlator back to CPU if required
   if(qcs->push_res){
+    if(corrQuda == NULL) errorQuda("%s: Position-space correlator buffer not allocated!\n", __func__);
     double t24 = MPI_Wtime();
     LONG_T lV = qcs->paramAPI.mpParam.locvol;
     int Ndata = qcs->paramAPI.mpParam.Ndata;

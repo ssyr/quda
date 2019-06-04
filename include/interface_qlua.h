@@ -118,6 +118,7 @@ typedef struct {
   int localL[QUDA_DIM];
   int totalL[QUDA_DIM];
   int bb_max_depth;
+  int doMomProj;
 } cntrParam;
 
 typedef struct {

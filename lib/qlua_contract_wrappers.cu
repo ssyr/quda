@@ -11,6 +11,20 @@
 
 namespace quda {  
 
+  //- Global variables
+  const int nShiftFlag = 20;
+  const int nShiftType = 3;
+  
+  const char *qcShiftFlagArray = "XxYyZzTtQqRrSsUuVvWw" ;
+  const char *qcShiftTypeArray[] = {"Covariant",
+				    "Non-Covariant",
+				    "AdjSplitCov"};
+  
+  const char *qcShiftDirArray[] = {"x", "y", "z", "t"};
+  const char *qcShiftSgnArray[] = {"-", "+"};
+  //---------------------------------------------------------------------------
+  
+
   void createPhaseMatrix_GPU(complex<QUDA_REAL> *phaseMatrix_dev,
                              const int *momMatrix,
                              cntrParam param){

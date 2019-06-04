@@ -145,6 +145,9 @@ namespace quda {
     //- whether to return position space correlator (true) or not
     int push_res;
 
+    //- whether to perform Momentum Projection
+    int doMomProj;
+
     //- whether zero-link contractions are done
     int bb_zerolink_done;
 
