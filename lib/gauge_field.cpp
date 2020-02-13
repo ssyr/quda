@@ -27,16 +27,29 @@ namespace quda {
     site_size(u.SiteSize())
   { }
 
-
   GaugeField::GaugeField(const GaugeFieldParam &param) :
-    LatticeField(param), bytes(0), phase_offset(0), phase_bytes(0), nColor(param.nColor), nFace(param.nFace),
-    geometry(param.geometry), reconstruct(param.reconstruct), 
+    LatticeField(param),
+    bytes(0),
+    phase_offset(0),
+    phase_bytes(0),
+    nColor(param.nColor),
+    nFace(param.nFace),
+    geometry(param.geometry),
+    reconstruct(param.reconstruct),
     nInternal(reconstruct != QUDA_RECONSTRUCT_NO ? reconstruct : nColor * nColor * 2),
-    order(param.order), fixed(param.fixed), link_type(param.link_type), t_boundary(param.t_boundary), 
-    anisotropy(param.anisotropy), tadpole(param.tadpole), fat_link_max(link_type == QUDA_ASQTAD_FAT_LINKS ? 0.0 : 1.0),
+    order(param.order),
+    fixed(param.fixed),
+    link_type(param.link_type),
+    t_boundary(param.t_boundary),
+    anisotropy(param.anisotropy),
+    tadpole(param.tadpole),
+    fat_link_max(link_type == QUDA_ASQTAD_FAT_LINKS ? 0.0 : 1.0),
     create(param.create),
-    staggeredPhaseType(param.staggeredPhaseType), staggeredPhaseApplied(param.staggeredPhaseApplied), i_mu(param.i_mu),
-    site_offset(param.site_offset), site_size(param.site_size)
+    staggeredPhaseType(param.staggeredPhaseType),
+    staggeredPhaseApplied(param.staggeredPhaseApplied),
+    i_mu(param.i_mu),
+    site_offset(param.site_offset),
+    site_size(param.site_size)
   {
     if (ghost_precision != precision) ghost_precision = precision; // gauge fields require matching precision
 
@@ -48,30 +61,26 @@ namespace quda {
       errorQuda("Anisotropy only supported for Wilson links");
     if (link_type != QUDA_WILSON_LINKS && fixed == QUDA_GAUGE_FIXED_YES)
       errorQuda("Temporal gauge fixing only supported for Wilson links");
-#ifdef USE_LEGACY_DSLASH
-    if(link_type != QUDA_ASQTAD_LONG_LINKS && (reconstruct ==  QUDA_RECONSTRUCT_13 || reconstruct == QUDA_RECONSTRUCT_9))
-      errorQuda("reconstruct %d only supported for staggered long links\n", reconstruct);
-    if (link_type == QUDA_ASQTAD_LONG_LINKS && reconstruct == QUDA_RECONSTRUCT_9)
-      errorQuda("reconstruct %d not supported for staggered long links with QUDA_LEGACY_DSLASH\n", reconstruct);
-#endif
-    if(geometry == QUDA_SCALAR_GEOMETRY) {
+    if (geometry == QUDA_SCALAR_GEOMETRY) {
       real_length = volume*nInternal;
       length = 2*stride*nInternal; // two comes from being full lattice
     } else if (geometry == QUDA_VECTOR_GEOMETRY) {
       real_length = nDim*volume*nInternal;
       length = 2*nDim*stride*nInternal; // two comes from being full lattice
-    } else if(geometry == QUDA_TENSOR_GEOMETRY){
+    } else if (geometry == QUDA_TENSOR_GEOMETRY) {
       real_length = (nDim*(nDim-1)/2)*volume*nInternal;
       length = 2*(nDim*(nDim-1)/2)*stride*nInternal; // two comes from being full lattice
-    } else if(geometry == QUDA_COARSE_GEOMETRY){
+    } else if (geometry == QUDA_COARSE_GEOMETRY) {
       real_length = 2*nDim*volume*nInternal;
       length = 2*2*nDim*stride*nInternal;  //two comes from being full lattice
     }
 
     if (reconstruct == QUDA_RECONSTRUCT_9 || reconstruct == QUDA_RECONSTRUCT_13) {
-      // Need to adjust the phase alignment as well.  
-      int half_phase_bytes = ((size_t)length/(2*reconstruct))*precision; // number of bytes needed to store phases for a single parity
-      int half_gauge_bytes = ((size_t)length/2)*precision - half_phase_bytes; // number of bytes needed to store the gauge field for a single parity excluding the phases
+      // Need to adjust the phase alignment as well.
+      int half_phase_bytes
+        = (length / (2 * reconstruct)) * precision; // number of bytes needed to store phases for a single parity
+      int half_gauge_bytes = (length / 2) * precision
+        - half_phase_bytes; // number of bytes needed to store the gauge field for a single parity excluding the phases
       // Adjust the alignments for the gauge and phase separately
       half_phase_bytes = ((half_phase_bytes + (512-1))/512)*512;
       half_gauge_bytes = ((half_gauge_bytes + (512-1))/512)*512;
@@ -80,7 +89,7 @@ namespace quda {
       phase_bytes = half_phase_bytes*2;
       bytes = (half_gauge_bytes + half_phase_bytes)*2;      
     } else {
-      bytes = (size_t)length*precision;
+      bytes = length * precision;
       if (isNative()) bytes = 2*ALIGNMENT_ADJUST(bytes/2);
     }
     total_bytes = bytes;

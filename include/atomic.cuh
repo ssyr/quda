@@ -15,22 +15,30 @@
 #if __COMPUTE_CAPABILITY__ < 600
 /**
    @brief Implementation of double-precision atomic addition using compare
-   and swap.
+   and swap. Taken from the CUDA programming guide.
 
    @param addr Address that stores the atomic variable to be updated
    @param val Value to be added to the atomic
 */
-static inline __device__ double atomicAdd(double *addr, double val){
-  double old = *addr, assumed;
+static inline __device__ double atomicAdd(double* address, double val)
+{
+  unsigned long long int* address_as_ull =
+                            (unsigned long long int*)address;
+  unsigned long long int old = *address_as_ull, assumed;
+
   do {
     assumed = old;
-    old = __longlong_as_double( atomicCAS((unsigned long long int*)addr,
-					  __double_as_longlong(assumed),
-					  __double_as_longlong(val + assumed)));
-  } while ( __double_as_longlong(assumed) != __double_as_longlong(old) );
-  
-  return old;
+    old = atomicCAS(address_as_ull, assumed,
+                    __double_as_longlong(val +
+                           __longlong_as_double(assumed)));
+
+    // Note: uses integer comparison to avoid hang in case of NaN (since NaN != NaN)
+  } while (assumed != old);
+
+  return __longlong_as_double(old);
 }
+#endif
+
 #endif
 
 /**
@@ -42,8 +50,15 @@ static inline __device__ double atomicAdd(double *addr, double val){
 */
 static inline __device__ double2 atomicAdd(double2 *addr, double2 val){
   double2 old = *addr;
+  // This is a necessary evil to avoid conflicts between the atomicAdd
+  // declared in CUDA 8.0+ headers which are visible for host
+  // compilation, which cause a conflict when compiled on clang-cuda.
+  // As a result we do not support any architecture without native
+  // double precision atomics on clang-cuda.
+#if defined(__CUDA_ARCH__) || CUDA_VERSION >= 8000
   old.x = atomicAdd((double*)addr, val.x);
   old.y = atomicAdd((double*)addr + 1, val.y);
+#endif
   return old;
 }
 
@@ -117,4 +132,23 @@ static inline __device__ char2 atomicAdd(char2 *addr, char2 val){
   return old.s;
 }
 
-#endif
+/**
+   @brief Implementation of single-precision atomic max using compare
+   and swap. May not support NaNs properly...
+
+   @param addr Address that stores the atomic variable to be updated
+   @param val Value to be added to the atomic
+*/
+static inline __device__ float atomicMax(float *addr, float val){
+  unsigned int old = __float_as_uint(*addr), assumed;
+  do {
+    assumed = old;
+    if (__uint_as_float(old) >= val) break;
+
+    old = atomicCAS((unsigned int*)addr,
+           assumed,
+           __float_as_uint(val));
+  } while ( assumed != old );
+
+  return __uint_as_float(old);
+}

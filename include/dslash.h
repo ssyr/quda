@@ -19,7 +19,7 @@ protected:
 
     const int nDimComms;
 
-    char aux_base[TuneKey::aux_n];
+    char aux_base[TuneKey::aux_n - 32];
     char aux[8][TuneKey::aux_n];
 
 #ifdef JITIFY
@@ -57,7 +57,7 @@ protected:
     {
       strcpy(aux[kernel_type], kernel_str);
       if (kernel_type == INTERIOR_KERNEL) strcat(aux[kernel_type], comm_dim_partitioned_string());
-      strcat(aux[kernel_type], aux_base);
+      strncat(aux[kernel_type], aux_base, TuneKey::aux_n-1);
     }
 
     bool tuneGridDim() const { return false; }
@@ -72,7 +72,7 @@ protected:
       // Also, the accessor constructor calls Ghost(), which uses
       // ghost_buf, but this is only presently set with the
       // synchronous exchangeGhost.
-      static void *ghost[8] = { }; // needs to be persistent across interior and exterior calls
+      static void *ghost[8] = {}; // needs to be persistent across interior and exterior calls
       for (int dim = 0; dim < 4; dim++) {
 
         for (int dir = 0; dir < 2; dir++) {
@@ -242,6 +242,9 @@ public:
         nDimComms(4),
         dslashParam(arg)
     {
+      if (checkLocation(out, in) == QUDA_CPU_FIELD_LOCATION)
+        errorQuda("CPU Fields not supported in Dslash framework yet");
+
       // this sets the communications pattern for the packing kernel
       setPackComms(arg.commDim);
 

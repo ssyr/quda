@@ -39,6 +39,8 @@
   void setSpinorSiteSize(int n);
   int dimPartitioned(int dim);
 
+  bool last_node_in_t();
+
   int neighborIndex(int i, int oddBit, int dx4, int dx3, int dx2, int dx1);
   int neighborIndexFullLattice(int i, int dx4, int dx3, int dx2, int dx1) ;
   
@@ -64,7 +66,8 @@
 				    QudaDslashType dslash_type);
 
   /** Create random spinor source field using QUDA's internal hypercubic GPU RNG */
-  void construct_spinor_source(void *v, int nSpin, int nColor, QudaPrecision precision, const int * const x, quda::RNG &rng);
+  void construct_spinor_source(void *v, int nSpin, int nColor, QudaPrecision precision, const int *const x,
+                               quda::RNG &rng);
   void construct_clover_field(void *clover, double norm, double diag, QudaPrecision precision);
   void createSiteLinkCPU(void** link,  QudaPrecision precision, int phase) ;
 
@@ -85,7 +88,8 @@
   
   //used by link fattening code
   int x4_from_full_index(int i);
-  // ---------- gauge_read.cpp ----------
+
+// ---------- gauge_read.cpp ----------
   
   //void readGaugeField(char *filename, float *gauge[], int argc, char *argv[]);
 

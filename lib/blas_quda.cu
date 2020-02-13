@@ -156,10 +156,10 @@ namespace quda {
       checkLength(x, v);
 
       Spinor<RegType, StoreType, M, writeX> X(x);
-      Spinor<RegType,     yType, M, writeY> Y(y);
+      Spinor<RegType, yType, M, writeY> Y(y);
       Spinor<RegType, StoreType, M, writeZ> Z(z);
       Spinor<RegType, StoreType, M, writeW> W(w);
-      Spinor<RegType,     yType, M, writeV> V(v);
+      Spinor<RegType, yType, M, writeV> V(v);
 
       typedef typename scalar<RegType>::type Float;
       typedef typename vector<Float, 2>::type Float2;
@@ -403,7 +403,7 @@ namespace quda {
 
 #if QUDA_PRECISION & 8
             if (x.Nspin() == 4) {
-              const int M = 6;
+              const int M = 12;
               nativeBlas<double2, char4, double2, M, Functor, writeX, writeY, writeZ, writeW, writeV>(
                   a, b, c, x, y, z, w, v, x.Volume());
             } else if (x.Nspin() == 1) {
@@ -525,10 +525,17 @@ namespace quda {
           make_double2(REAL(a), IMAG(a)), make_double2(REAL(b), IMAG(b)), make_double2(0.0, 0.0), x, y, x, x, y);
     }
 
+    void caxpbypczw(const Complex &a, ColorSpinorField &x, const Complex &b, ColorSpinorField &y, const Complex &c,
+                    ColorSpinorField &z, ColorSpinorField &w)
+    {
+      uni_blas<caxpbypczw_, 0, 0, 0, 1>(make_double2(REAL(a), IMAG(a)), make_double2(REAL(b), IMAG(b)),
+                                        make_double2(REAL(c), IMAG(c)), x, y, z, w, y);
+    }
+
     void cxpaypbz(ColorSpinorField &x, const Complex &a, ColorSpinorField &y,
 		  const Complex &b, ColorSpinorField &z) {
-      uni_blas<cxpaypbz_, 0, 0, 1>(
-          make_double2(REAL(a), IMAG(a)), make_double2(REAL(b), IMAG(b)), make_double2(0.0, 0.0), x, y, z, z, y);
+      uni_blas<caxpbypczw_, 0, 0, 0, 1>(make_double2(1.0, 0.0), make_double2(REAL(a), IMAG(a)),
+                                        make_double2(REAL(b), IMAG(b)), x, y, z, z, y);
     }
 
     void axpyBzpcx(double a, ColorSpinorField& x, ColorSpinorField& y, double b,

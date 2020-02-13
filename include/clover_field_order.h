@@ -7,18 +7,14 @@
  *
  */
 
-// trove requires the warp shuffle instructions introduced with Kepler
-#if __COMPUTE_CAPABILITY__ >= 300
-#include <trove/ptr.h>
-#else
-#define DISABLE_TROVE
-#endif
 #include <register_traits.h>
 #include <clover_field.h>
 #include <complex_quda.h>
 #include <thrust_helper.cuh>
 #include <quda_matrix.h>
 #include <color_spinor.h>
+#include <trove_helper.cuh>
+#include <texture_helper.cuh>
 
 namespace quda {
 
@@ -57,20 +53,20 @@ namespace quda {
       */
       template<typename C>
       __device__ __host__ inline void operator=(const C &a) {
-	field.save((Float*)a.data, x_cb, parity, chirality);
+        field.save(a.data, x_cb, parity, chirality);
       }
     };
 
   template <typename T, int N>
     template <typename S>
     __device__ __host__ inline void HMatrix<T,N>::operator=(const clover_wrapper<T,S> &a) {
-    a.field.load((T*)data, a.x_cb, a.parity, a.chirality);
+    a.field.load(data, a.x_cb, a.parity, a.chirality);
   }
 
   template <typename T, int N>
     template <typename S>
     __device__ __host__ inline HMatrix<T,N>::HMatrix(const clover_wrapper<T,S> &a) {
-    a.field.load((T*)data, a.x_cb, a.parity, a.chirality);
+    a.field.load(data, a.x_cb, a.parity, a.chirality);
   }
 
   namespace clover {
@@ -353,6 +349,37 @@ namespace quda {
       }
     };
 
+    /*
+      FIXME the below is the old optimization used for reading the
+      clover field, making use of the symmetry to reduce the number of
+      reads.
+
+#define READ_CLOVER2_DOUBLE_STR(clover_, chi)                           \
+    double2 C0, C1, C2, C3, C4, C5, C6, C7, C8, C9;                       \
+    double2 C10, C11, C12, C13, C14, C15, C16, C17;                       \
+    double2* clover = (double2*)clover_;                                  \
+    load_streaming_double2(C0, &clover[sid + (18*chi+0)*param.cl_stride]); \
+    load_streaming_double2(C1, &clover[sid + (18*chi+1)*param.cl_stride]); \
+    double diag = 0.5*(C0.x + C1.y);                                      \
+    double diag_inv = 1.0/diag;                                           \
+    C2 = make_double2(diag*(2-C0.y*diag_inv), diag*(2-C1.x*diag_inv));    \
+    load_streaming_double2(C3, &clover[sid + (18*chi+3)*param.cl_stride]);        \
+    load_streaming_double2(C4, &clover[sid + (18*chi+4)*param.cl_stride]);        \
+    load_streaming_double2(C5, &clover[sid + (18*chi+5)*param.cl_stride]);        \
+    load_streaming_double2(C6, &clover[sid + (18*chi+6)*param.cl_stride]);        \
+    load_streaming_double2(C7, &clover[sid + (18*chi+7)*param.cl_stride]);        \
+    load_streaming_double2(C8, &clover[sid + (18*chi+8)*param.cl_stride]);        \
+    load_streaming_double2(C9, &clover[sid + (18*chi+9)*param.cl_stride]);        \
+    load_streaming_double2(C10, &clover[sid + (18*chi+10)*param.cl_stride]);      \
+    load_streaming_double2(C11, &clover[sid + (18*chi+11)*param.cl_stride]);      \
+    load_streaming_double2(C12, &clover[sid + (18*chi+12)*param.cl_stride]);      \
+    load_streaming_double2(C13, &clover[sid + (18*chi+13)*param.cl_stride]);      \
+    load_streaming_double2(C14, &clover[sid + (18*chi+14)*param.cl_stride]); \
+    C15 = make_double2(-C3.x,-C3.y);                                      \
+    C16 = make_double2(-C4.x,-C4.y);                                      \
+    C17 = make_double2(-C8.x,-C8.y);                                      \
+    */
+
     /**
        This is a template driven generic clover field accessor.  To
        deploy for a specifc field ordering, the two operator()
@@ -380,8 +407,6 @@ namespace quda {
 	
 	CloverField& Field() { return A; }
 	
-	virtual ~FieldOrder() { ; } 
-    
     	/**
 	 * @brief Read-only complex-member accessor function
 	 *
@@ -505,14 +530,17 @@ namespace quda {
        @tparam Float Underlying storage data type of the field
        @tparam length Total number of elements per packed clover matrix (e.g., 72)
        @tparam N Number of real numbers per short vector
+       @tparam add_rho Whether to add the constant rho onto the
+       diagonal.  This is used to enable Hasenbusch mass
+       preconditioning.
        @tparam huge_alloc Template parameter that enables 64-bit
        pointer arithmetic for huge allocations (e.g., packed set of
        vectors).  Default is to use 32-bit pointer arithmetic.
     */
-    template <typename Float, int length, int N, bool huge_alloc=false>
-      struct FloatNOrder {
-      using Accessor = FloatNOrder<Float, length, N, huge_alloc>;
-      typedef typename mapper<Float>::type RegType;
+    template <typename Float, int length, int N, bool add_rho=false, bool huge_alloc=false>
+    struct FloatNOrder {
+      using Accessor = FloatNOrder<Float, length, N, add_rho, huge_alloc>;
+      using real = typename mapper<Float>::type;
       typedef typename VectorType<Float, N>::type Vector;
       typedef typename AllocType<huge_alloc>::type AllocInt;
       typedef float norm_type;
@@ -523,7 +551,7 @@ namespace quda {
       const AllocInt offset; // offset can be 32-bit or 64-bit
       const AllocInt norm_offset;
 #ifdef USE_TEXTURE_OBJECTS
-	typedef typename TexVectorType<RegType,N>::type TexVector;
+	typedef typename TexVectorType<real, N>::type TexVector;
 	cudaTextureObject_t tex;
 	cudaTextureObject_t normTex;
 	const int tex_offset;
@@ -532,15 +560,16 @@ namespace quda {
 	const int stride;
 
 	const bool twisted;
-	const Float mu2;
+	const real mu2;
+        const real rho;
 
-	size_t bytes;
+        size_t bytes;
 	size_t norm_bytes;
 	void *backup_h; //! host memory for backing up the field when tuning
 	void *backup_norm_h; //! host memory for backing up norm when tuning
 
         FloatNOrder(const CloverField &clover, bool is_inverse, Float *clover_ = 0, norm_type *norm_ = 0,
-            bool override = false) :
+                    bool override = false) :
             offset(clover.Bytes() / (2 * sizeof(Float))),
             norm_offset(clover.NormBytes() / (2 * sizeof(norm_type))),
 #ifdef USE_TEXTURE_OBJECTS
@@ -552,6 +581,7 @@ namespace quda {
             stride(clover.Stride()),
             twisted(clover.Twisted()),
             mu2(clover.Mu2()),
+            rho(clover.Rho()),
             bytes(clover.Bytes()),
             norm_bytes(clover.NormBytes()),
             backup_h(nullptr),
@@ -575,10 +605,10 @@ namespace quda {
 	  }
 #endif
 	}
-      
-	bool  Twisted()	const	{return twisted;}
-	Float Mu2()	const	{return mu2;}
-	
+
+	bool Twisted() const { return twisted; }
+	real Mu2() const { return mu2; }
+
 	/**
 	   @brief This accessor routine returns a clover_wrapper to this object,
 	   allowing us to overload various operators for manipulating at
@@ -589,9 +619,9 @@ namespace quda {
 	   @return Instance of a colorspinor_wrapper that curries in access to
 	   this field at the above coordinates.
 	*/
-        __device__ __host__ inline clover_wrapper<RegType, Accessor> operator()(int x_cb, int parity, int chirality)
+        __device__ __host__ inline clover_wrapper<real, Accessor> operator()(int x_cb, int parity, int chirality)
         {
-          return clover_wrapper<RegType, Accessor>(*this, x_cb, parity, chirality);
+          return clover_wrapper<real, Accessor>(*this, x_cb, parity, chirality);
         }
 
         /**
@@ -604,10 +634,10 @@ namespace quda {
 	   @return Instance of a colorspinor_wrapper that curries in access to
 	   this field at the above coordinates.
 	*/
-        __device__ __host__ inline const clover_wrapper<RegType, Accessor> operator()(
+        __device__ __host__ inline const clover_wrapper<real, Accessor> operator()(
             int x_cb, int parity, int chirality) const
         {
-          return clover_wrapper<RegType, Accessor>(const_cast<Accessor &>(*this), x_cb, parity, chirality);
+          return clover_wrapper<real, Accessor>(const_cast<Accessor &>(*this), x_cb, parity, chirality);
         }
 
         /**
@@ -617,12 +647,12 @@ namespace quda {
 	   @param[in] parity Field parity
 	   @param[in] chirality Chiral block index
 	 */
-	__device__ __host__ inline void load(RegType v[block], int x, int parity, int chirality) const {
-
+	__device__ __host__ inline void load(real v[block], int x, int parity, int chirality) const
+        {
           norm_type nrm;
           if (isFixed<Float>::value) {
 #if defined(USE_TEXTURE_OBJECTS) && defined(__CUDA_ARCH__)
-            nrm = !huge_alloc ? tex1Dfetch<float>(normTex, parity * norm_offset + chirality * stride + x) :
+            nrm = !huge_alloc ? tex1Dfetch_<float>(normTex, parity * norm_offset + chirality * stride + x) :
                                 norm[parity * norm_offset + chirality * stride + x];
 #else
             nrm = norm[parity * norm_offset + chirality * stride + x];
@@ -634,11 +664,11 @@ namespace quda {
 #if defined(USE_TEXTURE_OBJECTS) && defined(__CUDA_ARCH__)
 	    if (!huge_alloc) { // use textures unless we have a huge alloc
                                // first do texture load from memory
-              TexVector vecTmp = tex1Dfetch<TexVector>(tex, parity*tex_offset + stride*(chirality*M+i) + x);
+              TexVector vecTmp = tex1Dfetch_<TexVector>(tex, parity*tex_offset + stride*(chirality*M+i) + x);
               // now insert into output array
 #pragma unroll
               for (int j = 0; j < N; j++) {
-                copy(v[i * N + j], reinterpret_cast<RegType *>(&vecTmp)[j]);
+                copy(v[i * N + j], reinterpret_cast<real *>(&vecTmp)[j]);
                 if (isFixed<Float>::value) v[i * N + j] *= nrm;
               }
             } else
@@ -652,7 +682,8 @@ namespace quda {
             }
 	  }
 
-	}
+          if (add_rho) for (int i=0; i<6; i++) v[i] += rho;
+        }
   
 	/**
 	   @brief Store accessor for a single chiral block
@@ -661,9 +692,9 @@ namespace quda {
 	   @param[in] parity Field parity
 	   @param[in] chirality Chiral block index
 	 */
-	__device__ __host__ inline void save(const RegType v[block], int x, int parity, int chirality) {
-
-          RegType tmp[block];
+	__device__ __host__ inline void save(const real v[block], int x, int parity, int chirality)
+        {
+          real tmp[block];
 
           // find the norm of each chiral block
           if (isFixed<Float>::value) {
@@ -673,9 +704,9 @@ namespace quda {
             norm[parity*norm_offset + chirality*stride + x] = scale;
 
 #ifdef __CUDA_ARCH__
-            RegType scale_inv = __fdividef(fixedMaxValue<Float>::value, scale);
+            real scale_inv = __fdividef(fixedMaxValue<Float>::value, scale);
 #else
-            RegType scale_inv = fixedMaxValue<Float>::value / scale;
+            real scale_inv = fixedMaxValue<Float>::value / scale;
 #endif
 #pragma unroll
             for (int i = 0; i < block; i++) tmp[i] = v[i] * scale_inv;
@@ -701,7 +732,7 @@ namespace quda {
 	   @param[in] parity Field parity
 	   @param[in] chirality Chiral block index
 	 */
-	__device__ __host__ inline void load(RegType v[length], int x, int parity) const {
+	__device__ __host__ inline void load(real v[length], int x, int parity) const {
 #pragma unroll
           for (int chirality = 0; chirality < 2; chirality++) load(&v[chirality * block], x, parity, chirality);
         }
@@ -713,7 +744,7 @@ namespace quda {
 	   @param[in] parity Field parity
 	   @param[in] chirality Chiral block index
 	 */
-	__device__ __host__ inline void save(const RegType v[length], int x, int parity) {
+	__device__ __host__ inline void save(const real v[length], int x, int parity) {
 #pragma unroll
           for (int chirality = 0; chirality < 2; chirality++) save(&v[chirality * block], x, parity, chirality);
         }
@@ -941,19 +972,19 @@ namespace quda {
   } // namespace clover
 
   // Use traits to reduce the template explosion
-  template<typename Float,int N=72> struct clover_mapper { };
+  template<typename Float,int N=72, bool add_rho=false> struct clover_mapper { };
 
   // double precision uses Float2
-  template<int N> struct clover_mapper<double,N> { typedef clover::FloatNOrder<double, N, 2> type; };
+  template<int N, bool add_rho> struct clover_mapper<double,N,add_rho> { typedef clover::FloatNOrder<double, N, 2, add_rho> type; };
 
   // single precision uses Float4
-  template<int N> struct clover_mapper<float,N> { typedef clover::FloatNOrder<float, N, 4> type; };
+  template<int N, bool add_rho> struct clover_mapper<float,N,add_rho> { typedef clover::FloatNOrder<float, N, 4, add_rho> type; };
 
   // half precision uses Float4
-  template<int N> struct clover_mapper<short,N> { typedef clover::FloatNOrder<short, N, 4> type; };
+  template<int N, bool add_rho> struct clover_mapper<short,N,add_rho> { typedef clover::FloatNOrder<short, N, 4, add_rho> type; };
 
   // quarter precision uses Float4
-  template<int N> struct clover_mapper<char,N> { typedef clover::FloatNOrder<char, N, 4> type; };
+  template<int N, bool add_rho> struct clover_mapper<char,N,add_rho> { typedef clover::FloatNOrder<char, N, 4, add_rho> type; };
 
 } // namespace quda
 

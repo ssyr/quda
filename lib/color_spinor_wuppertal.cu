@@ -113,9 +113,8 @@ namespace quda {
 
     computeNeighborSum<Float,Nc>(out, arg, x_cb, parity);
 
-    Vector in;
-    arg.in.load((Float*)in.data, x_cb, parity);
-    out = arg.bW * in + out;
+    Vector in = arg.in(x_cb, parity) ;
+    out = arg.bW * in + out ;
     
     arg.out(x_cb, parity) = out;
   }

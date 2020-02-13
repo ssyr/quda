@@ -225,9 +225,8 @@ int main(int argc, char **argv)
     gParamEx.nFace = 1;
     for(int dir=0; dir<4; ++dir) gParamEx.r[dir] = R[dir];
     cudaGaugeField *gaugeEx = new cudaGaugeField(gParamEx);
-    int halfvolume = xdim*ydim*zdim*tdim >> 1;
     // CURAND random generator initialization
-    RNG *randstates = new RNG(halfvolume, 1234, gauge_param.X);
+    RNG *randstates = new RNG(*gauge, 1234);
     randstates->Init();
 
     int nsteps = heatbath_num_steps;
@@ -250,7 +249,7 @@ int main(int argc, char **argv)
       // Get pointer to internal resident gauge field
       cudaGaugeField* extendedGaugeResident = new cudaGaugeField(gParamEx);
       copyExtendedResidentGaugeQuda((void*)extendedGaugeResident, QUDA_CUDA_FIELD_LOCATION);
-      InitGaugeField( *gaugeEx);
+      InitGaugeField(*gaugeEx);
       copyExtendedGauge(*gaugeEx, *extendedGaugeResident, QUDA_CUDA_FIELD_LOCATION);
       delete extendedGaugeResident;
 
@@ -269,13 +268,13 @@ int main(int argc, char **argv)
     gauge_param.location = QUDA_CUDA_FIELD_LOCATION;
 
     loadGaugeQuda(gauge->Gauge_p(), &gauge_param);
-    double3 plaq = plaquette( *gaugeEx, QUDA_CUDA_FIELD_LOCATION) ;
-    double charge = qChargeCuda();
+    double3 plaq = plaquette(*gaugeEx);
+    double charge = qChargeQuda();
     printfQuda("Initial gauge field plaquette = %e topological charge = %e\n", plaq.x, charge);
 
     // Reunitarization setup
     setReunitarizationConsts();
-    plaquette( *gaugeEx, QUDA_CUDA_FIELD_LOCATION) ;
+    plaquette(*gaugeEx);
 
     // Do a warmup if requested
     if (nwarm > 0) {
@@ -295,8 +294,8 @@ int main(int argc, char **argv)
     gauge_param.location = QUDA_CUDA_FIELD_LOCATION;
 
     loadGaugeQuda(gauge->Gauge_p(), &gauge_param);
-    plaq = plaquette( *gaugeEx, QUDA_CUDA_FIELD_LOCATION) ;
-    charge = qChargeCuda();
+    plaq = plaquette(*gaugeEx);
+    charge = qChargeQuda();
     printfQuda("step=0 plaquette = %e topological charge = %e\n", plaq.x, charge);
 
 
@@ -313,8 +312,8 @@ int main(int argc, char **argv)
       copyExtendedGauge(*gauge, *gaugeEx, QUDA_CUDA_FIELD_LOCATION);
 
       loadGaugeQuda(gauge->Gauge_p(), &gauge_param);
-      plaq = plaquette( *gaugeEx, QUDA_CUDA_FIELD_LOCATION) ;
-      charge = qChargeCuda();
+      plaq = plaquette(*gaugeEx);
+      charge = qChargeQuda();
       printfQuda("step=%d plaquette = %e topological charge = %e\n", step, plaq.x, charge);
 
       freeGaugeQuda();

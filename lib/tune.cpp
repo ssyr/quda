@@ -225,8 +225,8 @@ namespace quda {
       TuneKey key = q.top().first;
       TuneParam param = q.top().second;
 
-      char tmp[14] = { };
-      strncpy(tmp, key.aux, 13);
+      char tmp[TuneKey::aux_n] = { };
+      strncpy(tmp, key.aux, TuneKey::aux_n);
       bool is_policy_kernel = strncmp(tmp, "policy_kernel", 13) == 0 ? true : false;
       bool is_policy = (strncmp(tmp, "policy", 6) == 0 && !is_policy_kernel) ? true : false;
 
@@ -265,8 +265,8 @@ namespace quda {
       TuneKey &key = it->key;
 
       // special case kernel members of a policy
-      char tmp[14] = { };
-      strncpy(tmp, key.aux, 13);
+      char tmp[TuneKey::aux_n] = { };
+      strncpy(tmp, key.aux, TuneKey::aux_n);
       bool is_policy_kernel = strcmp(tmp, "policy_kernel") == 0 ? true : false;
 
       out << std::setw(12) << it->time << "\t";
@@ -346,6 +346,13 @@ namespace quda {
       resource_path = path;
     }
 
+    bool version_check = true;
+    char *override_version_env = getenv("QUDA_TUNE_VERSION_CHECK");
+    if (override_version_env && strcmp(override_version_env, "0") == 0) {
+      version_check = false;
+      warningQuda("Disabling QUDA tunecache version check");
+    }
+
 #ifdef MULTI_GPU
     if (comm_rank() == 0) {
 #endif
@@ -362,21 +369,32 @@ namespace quda {
 	ls >> token;
 	if (token.compare("tunecache")) errorQuda("Bad format in %s", cache_path.c_str());
 	ls >> token;
-	if (token.compare(quda_version)) errorQuda("Cache file %s does not match current QUDA version. \nPlease delete this file or set the QUDA_RESOURCE_PATH environment variable to point to a new path.", cache_path.c_str());
-	ls >> token;
+        if (version_check && token.compare(quda_version))
+          errorQuda("Cache file %s does not match current QUDA version. \nPlease delete this file or set the "
+                    "QUDA_RESOURCE_PATH environment variable to point to a new path.",
+                    cache_path.c_str());
+        ls >> token;
 #ifdef GITVERSION
-	if (token.compare(gitversion)) errorQuda("Cache file %s does not match current QUDA version. \nPlease delete this file or set the QUDA_RESOURCE_PATH environment variable to point to a new path.", cache_path.c_str());
+        if (version_check && token.compare(gitversion))
+          errorQuda("Cache file %s does not match current QUDA version. \nPlease delete this file or set the "
+                    "QUDA_RESOURCE_PATH environment variable to point to a new path.",
+                    cache_path.c_str());
 #else
-	if (token.compare(quda_version)) errorQuda("Cache file %s does not match current QUDA version. \nPlease delete this file or set the QUDA_RESOURCE_PATH environment variable to point to a new path.", cache_path.c_str());
+        if (version_check && token.compare(quda_version))
+          errorQuda("Cache file %s does not match current QUDA version. \nPlease delete this file or set the "
+                    "QUDA_RESOURCE_PATH environment variable to point to a new path.",
+                    cache_path.c_str());
 #endif
 	ls >> token;
-	if (token.compare(quda_hash)) errorQuda("Cache file %s does not match current QUDA build. \nPlease delete this file or set the QUDA_RESOURCE_PATH environment variable to point to a new path.", cache_path.c_str());
+        if (version_check && token.compare(quda_hash))
+          errorQuda("Cache file %s does not match current QUDA build. \nPlease delete this file or set the "
+                    "QUDA_RESOURCE_PATH environment variable to point to a new path.",
+                    cache_path.c_str());
 
+        if (!cache_file.good()) errorQuda("Bad format in %s", cache_path.c_str());
+        getline(cache_file, line); // eat the blank line
 
-	if (!cache_file.good()) errorQuda("Bad format in %s", cache_path.c_str());
-	getline(cache_file, line); // eat the blank line
-
-	if (!cache_file.good()) errorQuda("Bad format in %s", cache_path.c_str());
+        if (!cache_file.good()) errorQuda("Bad format in %s", cache_path.c_str());
 	getline(cache_file, line); // eat the description line
 
 	deserializeTuneCache(cache_file);
@@ -549,8 +567,8 @@ namespace quda {
 	int n_policy = 0;
 	for (map::iterator entry = tunecache.begin(); entry != tunecache.end(); entry++) {
 	  // if a policy entry, then we can ignore
-	  char tmp[7] = { };
-	  strncpy(tmp, entry->first.aux, 6);
+	  char tmp[TuneKey::aux_n] = { };
+	  strncpy(tmp, entry->first.aux, TuneKey::aux_n);
 	  TuneParam param = entry->second;
 	  bool is_policy = strcmp(tmp, "policy") == 0 ? true : false;
 	  if (param.n_calls > 0 && !is_policy) n_entry++;

@@ -48,11 +48,23 @@ namespace quda {
     // for multigrid only
     Transfer *transfer; 
     Dirac *dirac;
+    bool need_bidirectional; // whether or not we need to force a bi-directional build
 
-  DiracParam() 
-    : type(QUDA_INVALID_DIRAC), kappa(0.0), m5(0.0), matpcType(QUDA_MATPC_INVALID),
-      dagger(QUDA_DAG_INVALID), gauge(0), clover(0), mu(0.0), mu_factor(0.0), epsilon(0.0),
-      tmp1(0), tmp2(0), halo_precision(QUDA_INVALID_PRECISION)
+    DiracParam() :
+      type(QUDA_INVALID_DIRAC),
+      kappa(0.0),
+      m5(0.0),
+      matpcType(QUDA_MATPC_INVALID),
+      dagger(QUDA_DAG_INVALID),
+      gauge(0),
+      clover(0),
+      mu(0.0),
+      mu_factor(0.0),
+      epsilon(0.0),
+      tmp1(0),
+      tmp2(0),
+      halo_precision(QUDA_INVALID_PRECISION),
+      need_bidirectional(false)
     {
       for (int i=0; i<QUDA_MAX_DIM; i++) commDim[i] = 1;
     }
@@ -801,6 +813,7 @@ public:
     double mu_factor;
     const Transfer *transfer; /** restrictor / prolongator defined here */
     const Dirac *dirac; /** Parent Dirac operator */
+    const bool need_bidirectional; /** Whether or not to force a bi-directional build */
 
     mutable cpuGaugeField *Y_h; /** CPU copy of the coarse link field */
     mutable cpuGaugeField *X_h; /** CPU copy of the coarse clover term */
@@ -1118,8 +1131,8 @@ public:
 	      Type() == typeid(DiracImprovedStaggeredPC).name() ||
 	      Type() == typeid(DiracImprovedStaggered).name()) ? true : false;
     }
-    
-    const Dirac* Expose() { return dirac; }
+
+    const Dirac *Expose() const { return dirac; }
 
     //! Shift term added onto operator (M/M^dag M/M M^dag + shift)
     double shift;

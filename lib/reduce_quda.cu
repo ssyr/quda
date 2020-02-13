@@ -1,3 +1,4 @@
+#include <atomic>
 #include <blas_quda.h>
 #include <tune_quda.h>
 #include <float_vector.h>
@@ -27,6 +28,38 @@ namespace quda {
     void* getHostReduceBuffer() { return h_reduce; }
     cudaEvent_t* getReduceEvent() { return &reduceEnd; }
     bool getFastReduce() { return fast_reduce_enabled; }
+
+    void initFastReduce(int32_t words)
+    {
+      // initialize the reduction values in 32-bit increments to INT_MIN
+      for (int32_t i = 0; i < words; i++) {
+        reinterpret_cast<int32_t *>(h_reduce)[i] = std::numeric_limits<int32_t>::min();
+      }
+
+      // ensure that the host memory write is complete before we launch the kernel
+      atomic_thread_fence(std::memory_order_release);
+    }
+
+    void completeFastReduce(int32_t words)
+    {
+      volatile int32_t *check = reinterpret_cast<int32_t *>(h_reduce);
+      int count = 0;
+      int complete = 0;
+      while (complete < words) {
+        // ensure visiblity to any changes in memory
+        atomic_thread_fence(std::memory_order_acquire);
+
+        complete = 0;
+        for (int32_t i = 0; i < words; i++) {
+          // spin-wait until all values have been updated
+          if (check[i] != std::numeric_limits<int32_t>::min()) complete++;
+        }
+        if (count++ % 10000 == 0) { // check error every 10000 iterations
+          // if there is an error in the kernel then we need to exit the spin-wait
+          if (cudaSuccess != cudaPeekAtLastError()) break;
+        }
+      }
+    }
 
     void initReduce()
     {
@@ -108,13 +141,8 @@ namespace quda {
       if (tp.grid.x > (unsigned int)deviceProp.maxGridSize[0])
         errorQuda("Grid size %d greater than maximum %d\n", tp.grid.x, deviceProp.maxGridSize[0]);
 
-      if (getFastReduce() && !commAsyncReduction()) {
-        // initialize the reduction values in 32-bit increments to INT_MIN
-        constexpr int32_t words = sizeof(ReduceType) / sizeof(int32_t);
-        for (unsigned int i = 0; i < tp.grid.y * words; i++) {
-          reinterpret_cast<int32_t *>(h_reduce)[i] = std::numeric_limits<int32_t>::min();
-        }
-      }
+      const int32_t words = tp.grid.y * sizeof(ReduceType) / sizeof(int32_t);
+      if (getFastReduce() && !commAsyncReduction()) initFastReduce(words);
 
 #ifdef JITIFY
       using namespace jitify::reflection;
@@ -130,18 +158,7 @@ namespace quda {
 #if (defined(_MSC_VER) && defined(_WIN64)) || defined(__LP64__)
         if (deviceProp.canMapHostMemory) {
           if (getFastReduce()) {
-            constexpr int32_t words = sizeof(ReduceType) / sizeof(int32_t);
-            volatile int32_t *check = reinterpret_cast<int32_t *>(h_reduce);
-            int count = 0;
-            for (unsigned int i = 0; i < tp.grid.y * words; i++) {
-              // spin-wait until all values have been updated
-              while (check[i] == std::numeric_limits<int32_t>::min()) {
-                if (count++ % 10000 == 0) { // check error every 10000 iterations
-                  // if there is an error in the kernel then we need to exit the spin-wait
-                  if (cudaSuccess != cudaPeekAtLastError()) break;
-                }
-              }
-            }
+            completeFastReduce(words);
           } else {
             qudaEventRecord(reduceEnd, stream);
             while (cudaSuccess != qudaEventQuery(reduceEnd)) { ; }
@@ -216,6 +233,7 @@ namespace quda {
           strcat(aux, ",");
           strcat(aux, z.AuxString());
         }
+        if (getFastReduce()) strcat(aux, ",fast_reduce");
 
 #ifdef JITIFY
         ::quda::create_jitify_program("kernels/reduce_core.cuh");
@@ -287,7 +305,7 @@ namespace quda {
 
       Spinor<RegType, StoreType, M, writeX> X(x);
       Spinor<RegType, StoreType, M, writeY> Y(y);
-      Spinor<RegType,     zType, M, writeZ> Z(z);
+      Spinor<RegType, zType, M, writeZ> Z(z);
       Spinor<RegType, StoreType, M, writeW> W(w);
       Spinor<RegType, StoreType, M, writeV> V(v);
 
@@ -420,7 +438,7 @@ namespace quda {
 #if defined(GPU_MULTIGRID)
             const int M = 12; // determines how much work per thread to do
             value
-                = nativeReduce<doubleN, ReduceType, float2, char2, char2, M, Reducer, writeX, writeY, writeZ, writeW, writeV>(
+                = nativeReduce<doubleN, ReduceType, float2, short2, short2, M, Reducer, writeX, writeY, writeZ, writeW, writeV>(
                     a, b, x, y, z, w, v, y.Volume());
 #else
             errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
@@ -575,6 +593,32 @@ namespace quda {
             errorQuda("QUDA_PRECISION=%d does not enable precision %d", QUDA_PRECISION, x.Precision());
 #endif
 
+          } else if (x.Precision() == QUDA_QUARTER_PRECISION) {
+
+#if QUDA_PRECISION & 1
+            if (x.Nspin() == 4) { // wilson
+#if defined(GPU_WILSON_DIRAC) || defined(GPU_DOMAIN_WALL_DIRAC)
+              const int M = 12; // determines how much work per thread to do
+              value = nativeReduce<doubleN, ReduceType, double2, char4, double2, M, Reducer, writeX, writeY, writeZ,
+                  writeW, writeV>(a, b, x, y, z, w, v, x.Volume());
+#else
+              errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
+#endif
+            } else if (x.Nspin() == 1) { // staggered
+#ifdef GPU_STAGGERED_DIRAC
+              const int M = 3; // determines how much work per thread to do
+              value = nativeReduce<doubleN, ReduceType, double2, char2, double2, M, Reducer, writeX, writeY, writeZ,
+                  writeW, writeV>(a, b, x, y, z, w, v, x.Volume());
+#else
+              errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
+#endif
+            } else {
+              errorQuda("ERROR: nSpin=%d is not supported\n", x.Nspin());
+            }
+#else
+            errorQuda("QUDA_PRECISION=%d does not enable precision %d", QUDA_PRECISION, x.Precision());
+#endif
+
           } else {
             errorQuda("Not implemented for this precision combination %d %d", x.Precision(), z.Precision());
           }
@@ -600,6 +644,33 @@ namespace quda {
 #ifdef GPU_STAGGERED_DIRAC
               const int M = 3;
               value = nativeReduce<doubleN, ReduceType, float2, short2, float2, M, Reducer, writeX, writeY, writeZ,
+                  writeW, writeV>(a, b, x, y, z, w, v, x.Volume());
+#else
+              errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
+#endif
+            } else {
+              errorQuda("ERROR: nSpin=%d is not supported\n", x.Nspin());
+            }
+            blas::bytes
+                += Reducer<ReduceType, double2, double2>::streams() * (unsigned long long)x.Volume() * sizeof(float);
+#else
+            errorQuda("QUDA_PRECISION=%d does not enable precision %d", QUDA_PRECISION, x.Precision());
+#endif
+
+          } else if (x.Precision() == QUDA_QUARTER_PRECISION) {
+#if QUDA_PRECISION & 1
+            if (x.Nspin() == 4) { // wilson
+#if defined(GPU_WILSON_DIRAC) || defined(GPU_DOMAIN_WALL_DIRAC)
+              const int M = 6;
+              value = nativeReduce<doubleN, ReduceType, float4, char4, float4, M, Reducer, writeX, writeY, writeZ,
+                  writeW, writeV>(a, b, x, y, z, w, v, x.Volume());
+#else
+              errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
+#endif
+            } else if (x.Nspin() == 1) { // staggered
+#ifdef GPU_STAGGERED_DIRAC
+              const int M = 3;
+              value = nativeReduce<doubleN, ReduceType, float2, char2, float2, M, Reducer, writeX, writeY, writeZ,
                   writeW, writeV>(a, b, x, y, z, w, v, x.Volume());
 #else
               errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
