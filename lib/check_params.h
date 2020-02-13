@@ -478,6 +478,11 @@ void printQudaInvertParam(QudaInvertParam *param) {
 #endif
 
 #ifdef INIT_PARAM
+  P(deflation_op, NULL);
+  P(eig_param, NULL);
+#endif
+
+#ifdef INIT_PARAM
   P(use_init_guess, QUDA_USE_INIT_GUESS_NO); //set the default to no
   P(omega, 1.0); // set default to no relaxation
 #else
@@ -600,12 +605,14 @@ void printQudaMultigridParam(QudaMultigridParam *param) {
 #endif
 
 #ifdef INIT_PARAM
-  // do nothing
+  P(invert_param, NULL);
 #elif defined CHECK_PARAM
-  checkInvertParam(param->invert_param);
+  if (NULL != param->invert_param) checkInvertParam(param->invert_param);
 #else
-  printQudaInvertParam(param->invert_param);
+  if (NULL != param->invert_param) printQudaInvertParam(param->invert_param); 
+  else printfQuda("QUDA Multigrid.invert_param = NULL\n");
 #endif
+
 
   P(n_level, INVALID_INT);
 
@@ -613,6 +620,10 @@ void printQudaMultigridParam(QudaMultigridParam *param) {
   int n_level = QUDA_MAX_MG_LEVEL;
 #else
   int n_level = param->n_level;
+#endif
+
+#ifdef INIT_PARAM
+  for (int i=0; i<n_level; i++) P(eig_param[i], NULL);
 #endif
 
 #ifdef INIT_PARAM
