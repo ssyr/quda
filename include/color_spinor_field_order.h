@@ -831,9 +831,9 @@ namespace quda {
       size_t bytes;
 
       FloatNOrder() :
-	offset(0), norm(0), norm_offset(0),
+	offset(0), norm(0), norm_offset(0)
 #ifdef USE_TEXTURE_OBJECTS
-	tex(0), texNorm(0), tex_offset(0)
+	, tex(0), texNorm(0), tex_offset(0)
 #endif
       { }
 
