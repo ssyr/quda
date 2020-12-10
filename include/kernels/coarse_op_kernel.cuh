@@ -156,7 +156,8 @@ namespace quda {
     int coord[4];
     getCoords(coord, x_cb, arg.x_size, parity);
 
-    constexpr int uvSpin = Arg::fineSpin * (Arg::from_coarse ? 2 : 1);
+    // the `Arg::fineSpin` query checks for the KD op
+    constexpr int uvSpin = Arg::fineSpin * (Arg::from_coarse || (Arg::fineSpin == 1 && 2 * Arg::fineSpin == decltype(arg.UV)::nSpin) ? 2 : 1);
     constexpr int nFace = 1; // to do: nFace == 3 version for long links
 
     using complex = complex<typename Arg::Float>;
