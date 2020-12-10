@@ -584,6 +584,9 @@ namespace quda {
         static constexpr int nVec = nVec_;
         static constexpr QudaFieldOrder order = order_;
 
+        /** Does this field type support ghost zones? */
+        static constexpr bool supports_ghost_zone = true;
+
       protected:
         complex<storeFloat> *v;
         const AccessorCB<storeFloat, nSpin, nColor, nVec, order> accessor;
