@@ -251,8 +251,7 @@ namespace quda {
     // Actually create the temporaries like UV, etc.
     auto location = Y.Location();
 
-    //Create a field UV which holds U*V.  Has the same structure as V,
-    // No need to double spin for the staggered operator, will need to double it for the K-D op.
+    //Create a field UV which holds U*V.
     ColorSpinorParam UVparam(T.Vectors(location));
     UVparam.create = QUDA_ZERO_FIELD_CREATE;
     UVparam.location = location;
@@ -377,7 +376,7 @@ namespace quda {
       errorQuda("Invalid Nc %d", XinvKD.Ncolor());
 
     constexpr int xinvColor = 16 * fineColor;
-    constexpr int xinvSpin = 2;
+    constexpr int xinvSpin = 1; // treat Xinv as a flat, "spinless" object even though it does have spin...
 
     if (dirac == QUDA_STAGGEREDKD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) {
       if (XinvKD.Precision() == QUDA_SINGLE_PRECISION) {

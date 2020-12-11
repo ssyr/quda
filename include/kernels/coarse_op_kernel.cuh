@@ -16,8 +16,8 @@ namespace quda {
   typedef int storeType;
 
   template <bool from_coarse_, typename Float_, int fineSpin_, int coarseSpin_, int fineColor_, int coarseColor_, typename coarseGauge,
-            typename coarseGaugeAtomic, typename fineGauge, typename fineSpinor, typename fineSpinorTmp,
-            typename fineSpinorV, typename fineClover>
+            typename coarseGaugeAtomic, typename fineGauge, typename fineSpinorAV_, typename fineSpinorUV_,
+            typename fineSpinorV_, typename fineClover>
   struct CalculateYArg {
     using Float = Float_;
 
@@ -33,14 +33,18 @@ namespace quda {
     static constexpr bool from_coarse = from_coarse_;
     static constexpr bool is_mma_compatible = coarseGauge::is_mma_compatible;
 
+    using fineSpinorV = fineSpinorV_;
+    using fineSpinorUV = fineSpinorUV_;
+    using fineSpinorAV = fineSpinorAV_;
+
     coarseGauge Y;           /** Computed coarse link field */
     coarseGauge X;           /** Computed coarse clover field */
 
     coarseGaugeAtomic Y_atomic;    /** Y atomic accessor used for computation before conversion to final format */
     coarseGaugeAtomic X_atomic;    /** X atomic accessor used for computation before conversion to final format */
 
-    fineSpinorTmp UV;        /** Temporary that stores the fine-link * spinor field product */
-    fineSpinor AV;           /** Temporary that stores the clover * spinor field product */
+    fineSpinorUV UV;        /** Temporary that stores the fine-link * spinor field product */
+    fineSpinorAV AV;           /** Temporary that stores the clover * spinor field product */
 
     const fineGauge U;       /** Fine grid link field */
     const fineSpinorV V;     /** Fine grid spinor field */
@@ -122,7 +126,7 @@ namespace quda {
 
     CalculateYArg(coarseGauge &Y, coarseGauge &X, 
       coarseGaugeAtomic &Y_atomic, coarseGaugeAtomic &X_atomic,
-      fineSpinorTmp &UV, fineSpinor &AV, const fineGauge &U, const fineSpinorV &V,
+      fineSpinorUV &UV, fineSpinorAV &AV, const fineGauge &U, const fineSpinorV &V,
       const fineClover &C, const fineClover &Cinv, double kappa, double mass, double mu, double mu_factor,
       const int *x_size_, const int *xc_size_, int *geo_bs_, int spin_bs_,
       const int *fine_to_coarse, const int *coarse_to_fine, bool bidirectional)
@@ -157,8 +161,9 @@ namespace quda {
     int coord[4];
     getCoords(coord, x_cb, arg.x_size, parity);
 
-    // the `Arg::fineSpin` query checks for the KD op
-    constexpr int uvSpin = Arg::fineSpin * (Arg::from_coarse || (Arg::fineSpin == 1 && 2 * Arg::fineSpin == decltype(arg.UV)::nSpin) ? 2 : 1);
+    // UV spin is 4 for Wilson op, 4 for coarse op, 1 for staggered op, 2 for coarsening the KD op
+    constexpr int uvSpin = Arg::fineSpinorUV::nSpin;
+    constexpr int avSpin = Arg::fineSpinorAV::nSpin;
     constexpr int nFace = 1; // to do: nFace == 3 version for long links
 
     using complex = complex<typename Arg::Float>;
@@ -182,22 +187,10 @@ namespace quda {
         }  //Fine Spin
       }    // Fine color columns
     } else if ( arg.comm_dim[dim] && (coord[dim] + nFace >= arg.x_size[dim]) ) {
+
       int ghost_idx = ghostFaceIndex<1>(coord, arg.x_size, dim, nFace);
 
-      if (!Arg::from_coarse) {
-
-        for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
-          auto U = make_tile_A<complex, false>(tile);
-          U.load(arg.U, dim, parity, x_cb, i0, k);
-          for (int s = 0; s < Arg::fineSpin; s++) {  //Fine Spin
-            auto W = make_tile_B<complex, true>(tile);
-            W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, s, k, j0);
-            UV[s].mma_nn(U, W);
-          } // Fine color columns
-        }   // Fine spin (tensor)
-
-      } else {
-
+      if (Arg::from_coarse) {
         for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
           for (int s_col=0; s_col<Arg::fineSpin; s_col++) {
             auto W = make_tile_B<complex, true>(tile);
@@ -211,26 +204,25 @@ namespace quda {
             } // which chiral block
           }  //Fine color columns
         }    // Fine Spin
+      } else  {
 
+        for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+          auto U = make_tile_A<complex, false>(tile);
+          U.load(arg.U, dim, parity, x_cb, i0, k);
+          // UV spin == the number of spins in W regardless of if it's 
+          // from Wilson, staggered, or KD staggered
+          for (int s = 0; s < avSpin; s++) {  //Fine Spin
+            auto W = make_tile_B<complex, true>(tile);
+            W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, s, k, j0);
+            UV[s].mma_nn(U, W);
+          } // Fine color columns
+        }   // Fine spin (tensor)
       } // Arg::from_coarse
 
     } else {
       int y_cb = linkIndexP1(coord, arg.x_size, dim);
 
-      if (!Arg::from_coarse) {
-
-        for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
-          auto U = make_tile_A<complex, false>(tile);
-          U.load(arg.U, dim, parity, x_cb, i0, k);
-          for (int s = 0; s < Arg::fineSpin; s++) {  //Fine Spin
-            auto W = make_tile_B<complex, false>(tile);
-            W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, s, k, j0);
-            UV[s].mma_nn(U, W);
-          }  //Fine color columns
-        }    // Fine Spin
-
-      } else {
-
+      if (Arg::from_coarse) {
         for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
           for (int s_col = 0; s_col < Arg::fineSpin; s_col++) {
             auto W = make_tile_B<complex, false>(tile);
@@ -244,11 +236,29 @@ namespace quda {
             } // which chiral block
           }  //Fine Spin
         }    // Fine color columns
-      }
+      } else {
 
+        for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+          auto U = make_tile_A<complex, false>(tile);
+          U.load(arg.U, dim, parity, x_cb, i0, k);
+          // UV spin == the number of spins in W regardless of if it's 
+          // from Wilson, staggered, or KD staggered
+          for (int s = 0; s < avSpin; s++) {  //Fine Spin
+            auto W = make_tile_B<complex, false>(tile);
+            W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, s, k, j0);
+            UV[s].mma_nn(U, W);
+          }  //Fine color columns
+        }    // Fine Spin
+      } // Arg::from_coarse
+
+    } // IN_PLACE / grabbing from ghost or not
+
+    // if we're applying U to the staggered KD's op AV, we need to swap the spins
+    if (Arg::fineSpin == 1 && avSpin == 2) {
+      for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, 1 - s, i0, j0);
+    } else {
+      for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
     }
-
-    for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
   } // computeUV
 
   template<int dim, QudaDirection dir, typename Arg>

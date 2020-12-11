@@ -1150,6 +1150,8 @@ namespace quda {
 
     bool set_scale = false; // records where the scale has been set already or not
 
+    double U_max_cache = 0.; // keep track of U_max values for coarse coarse clover
+
     // First compute the coarse forward links if needed
     if (bidirectional_links) {
       for (int d = 0; d < nDim; d++) {
@@ -1159,6 +1161,7 @@ namespace quda {
 
         if (uv.Precision() == QUDA_HALF_PRECISION) {
           double U_max = 3.0*G_.abs_max(from_coarse ? d+4 : d);
+          U_max_cache = U_max > U_max_cache ? U_max : U_max_cache;
           double uv_max = U_max * v.Scale();
           uv.Scale(uv_max);
           arg.UV.resetScale(uv_max);
@@ -1230,6 +1233,7 @@ namespace quda {
 
       if (uv.Precision() == QUDA_HALF_PRECISION) {
         double U_max = 3.0*G_.abs_max(d);
+        U_max_cache = U_max > U_max_cache ? U_max : U_max_cache;
         double uv_max = U_max * av.Scale();
         uv.Scale(uv_max);
         arg.UV.resetScale(uv_max);
@@ -1318,8 +1322,9 @@ namespace quda {
       if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Computing coarse CV and VCV via UV and VUV\n");
 
       if (uv.Precision() == QUDA_HALF_PRECISION) {
-        // use G as a proxy for the coarse clover because `C_` is a dummy object on the coarse level
-        double U_max = 3.0*G_.abs_max(0);
+        // use the maximum U_max from UV computation as a proxy for the coarse clover
+        // because `C_` is a dummy object on the coarse level
+        double U_max = U_max_cache;
         double uv_max = U_max * v.Scale();
         uv.Scale(uv_max);
         arg.UV.resetScale(uv_max);
