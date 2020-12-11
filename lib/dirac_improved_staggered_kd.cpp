@@ -241,7 +241,6 @@ namespace quda
   void DiracImprovedStaggeredKD::createCoarseOp(GaugeField &Y, GaugeField &X, const Transfer &T, double kappa,
                                                 double mass, double mu, double mu_factor) const
   {
-    errorQuda("Staggered KD operators do not support MG coarsening yet");
 
     if (T.getTransferType() != QUDA_TRANSFER_AGGREGATE)
       errorQuda("Staggered KD operators only support aggregation coarsening");

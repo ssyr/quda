@@ -19,6 +19,7 @@ namespace quda {
     COMPUTE_AV,
     COMPUTE_TMAV,
     COMPUTE_TMCAV,
+    COMPUTE_KDAV,
     COMPUTE_CLOVER_INV_MAX,
     COMPUTE_TWISTED_CLOVER_INV_MAX,
     COMPUTE_VUV,
@@ -85,6 +86,15 @@ namespace quda {
         ComputeTMCAVCPU(arg);
 #else
         errorQuda("Twisted clover dslash has not been built");
+#endif
+
+      } else if (type == COMPUTE_KDAV) {
+        if (from_coarse) errorQuda("ComputeKDAV should only be called from the fine grid");
+
+#if defined(STAGGEREDCOARSE)
+        ComputeKDAVCPU(arg);
+#else
+        errorQuda("Staggered dslash has not been built");
 #endif
 
       } else if (type == COMPUTE_CLOVER_INV_MAX) {
@@ -236,6 +246,21 @@ namespace quda {
 #else
 #if defined(GPU_TWISTED_CLOVER_DIRAC) && defined(WILSONCOARSE)
         qudaLaunchKernel(ComputeTMCAVGPU<Arg>, tp, stream, arg);
+#else
+        errorQuda("Twisted clover dslash has not been built");
+#endif
+#endif
+
+      } else if (type == COMPUTE_KDAV) {
+
+        if (from_coarse) errorQuda("ComputeKDAV should only be called from the fine grid");
+#ifdef JITIFY
+        error = program->kernel("quda::ComputeKDAVGPU")
+          .instantiate(Type<Arg>())
+          .configure(tp.grid,tp.block,tp.shared_bytes,stream).launch(arg);
+#else
+#if defined(STAGGEREDCOARSE)
+        qudaLaunchKernel(ComputeKDAVGPU<Arg>, tp, stream, arg);
 #else
         errorQuda("Twisted clover dslash has not been built");
 #endif
@@ -517,6 +542,9 @@ namespace quda {
 	// # Twice chiral blocks * size of chiral block * number of null space vectors
 	flops_ = 4l * arg.fineVolumeCB * 8 * (fineSpin/2) * (fineSpin/2) * (fineSpin/2) * fineColor * fineColor * coarseColor;
 	break;
+      case COMPUTE_KDAV:
+      flops_ = 0l; // fixme
+      break;
       case COMPUTE_VUV:
       // when the fine operator is truly fine the VUV multiplication is block sparse which halves the number of operations
       flops_ = 2l * arg.fineVolumeCB * 8 * fineSpin * fineSpin * coarseColor * coarseColor * fineColor / (!from_coarse ? coarseSpin : 1);
@@ -565,6 +593,8 @@ namespace quda {
 	bytes_ = arg.AV.Bytes() + arg.V.Bytes() + 4*arg.C.Bytes()*coarseColor; // Both clover and its inverse
 #endif
 	break;
+      case COMPUTE_KDAV:
+        bytes_ = 0l; // FIXME
       case COMPUTE_CLOVER_INV_MAX:
       case COMPUTE_TWISTED_CLOVER_INV_MAX:
         bytes_ = 2*arg.C.Bytes(); // read both parities of the clover field
@@ -607,6 +637,7 @@ namespace quda {
       case COMPUTE_AV:
       case COMPUTE_TMAV:
       case COMPUTE_TMCAV:
+      case COMPUTE_KDAV:
       case COMPUTE_CLOVER_INV_MAX:
       case COMPUTE_TWISTED_CLOVER_INV_MAX:
       case COMPUTE_VUV:
@@ -715,6 +746,7 @@ namespace quda {
       case COMPUTE_TMAV: resizeVector(2, coarseColor); break;
       case COMPUTE_AV:
       case COMPUTE_TMCAV: resizeVector(4, coarseColor); break; // y dimension is chirality and parity
+      case COMPUTE_KDAV: resizeVector(2 * coarseColor, fineColor); break; // y dimension is parity and coarse color
       default: resizeVector(2, 1); break;
       }
 
@@ -842,6 +874,7 @@ namespace quda {
         strcat(Aux, ",computeAV");
       else if (type == COMPUTE_TMAV)               strcat(Aux,",computeTmAV");
       else if (type == COMPUTE_TMCAV)              strcat(Aux,",computeTmcAV");
+      else if (type == COMPUTE_KDAV)              strcat(Aux,",computeKDAV");
       else if (type == COMPUTE_CLOVER_INV_MAX)
         strcat(Aux, ",computeCloverInverseMax");
       else if (type == COMPUTE_TWISTED_CLOVER_INV_MAX)
@@ -926,6 +959,7 @@ namespace quda {
       case COMPUTE_AV:
       case COMPUTE_TMAV:
       case COMPUTE_TMCAV:
+      case COMPUTE_KDAV:
       case COMPUTE_CLOVER_INV_MAX:
       case COMPUTE_TWISTED_CLOVER_INV_MAX:
       case COMPUTE_REVERSE_Y:
@@ -955,6 +989,7 @@ namespace quda {
       case COMPUTE_AV:
       case COMPUTE_TMAV:
       case COMPUTE_TMCAV:
+      case COMPUTE_KDAV:
       case COMPUTE_CLOVER_INV_MAX:
       case COMPUTE_TWISTED_CLOVER_INV_MAX:
       case COMPUTE_REVERSE_Y:
@@ -1133,6 +1168,31 @@ namespace quda {
       y.apply(0);
 
       if (getVerbosity() >= QUDA_VERBOSE) printfQuda("AV2 = %e\n", arg.AV.norm2());
+    }
+
+    // If doing the KD op we need to multiply the null-space vectors
+    // by the KD operator, which is a train wreck.
+    // We need a flavor of this that computes the max for half precision
+    if ( dirac == QUDA_STAGGEREDKD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC ) {
+      if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Computing KDAV\n");
+
+//      if (av.Precision() == QUDA_HALF_PRECISION) {
+//#ifdef DYNAMIC_CLOVER
+//        y.setComputeType(COMPUTE_CLOVER_INV_MAX);
+//        y.apply(0);
+//        double max = 6 * arg.max_h;
+//#else
+//        double max = 6*C_.abs_max(true);
+//#endif
+//        if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("clover max %e\n", max);
+//  av.Scale(max);
+//  arg.AV.resetScale(max);
+//      }
+
+      y.setComputeType(COMPUTE_KDAV);
+      y.apply(0);
+
+      if (getVerbosity() >= QUDA_VERBOSE) printfQuda("KDAV2 = %e\n", arg.AV.norm2());
     }
 
     // work out what to set the scales to

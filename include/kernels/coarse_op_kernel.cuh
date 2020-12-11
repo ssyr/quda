@@ -253,12 +253,7 @@ namespace quda {
 
     } // IN_PLACE / grabbing from ghost or not
 
-    // if we're applying U to the staggered KD's op AV, we need to swap the spins
-    if (Arg::fineSpin == 1 && avSpin == 2) {
-      for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, 1 - s, i0, j0);
-    } else {
-      for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
-    }
+    for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
   } // computeUV
 
   template<int dim, QudaDirection dir, typename Arg>
@@ -601,6 +596,97 @@ namespace quda {
       computeTMCAV(arg, parity, x_cb, 1, ic_c);
   }
 
+  /**
+     Calculates the matrix Xinv V^{s,c'}(x) for KD fermions
+     where indices are terrible and I'll figure it out later
+  */
+  template <typename Arg>
+  __device__ __host__ inline void computeKDAV(Arg &arg, int parity, int x_cb, int ic_c, int ic_f)
+  {
+    // lol okay let's figure this out
+    using Float = typename Arg::Float;
+    using complex = complex<Float>;
+
+    // I need to gather 16 sites worth of content
+
+    // Figure out my fine X Y Z T coords
+    int x_coords[4];
+    getCoords(x_coords, x_cb, arg.x_size, parity);
+
+    const int xinv_spin_row = parity;
+    const int xinv_color_row = 8 * ic_f + 4 * (x_coords[3] % 2) + 2 * (x_coords[2] % 2) + (x_coords[1] % 2);
+
+    // Figure out my coarse X Y Z T coords
+    int xc_coords[4];
+#pragma unroll
+    for (int d = 0; d < 4; d++) {
+      xc_coords[d] = x_coords[d] >> 1;
+    }
+
+    // Figure out my coarse parity, CB
+    const int xc_parity = (xc_coords[0] + xc_coords[1] + xc_coords[2] + xc_coords[3]) & 1;
+    const int xc_cb = linkIndex(xc_coords, arg.xc_size);
+
+    // Loop over each contribution from V
+#pragma unroll
+    for (int s = 0; s < Arg::coarseSpin; s++) { // coarse spin row == fine parity
+      complex val = 0;
+      int xinv_color_col = 0; // will equal 8 * jc_f + 4 * t + 2 * z + y as we go
+#pragma unroll
+      for (int jc_f = 0; jc_f < Arg::fineColor; jc_f++) { // fine color
+        for (int t = 0; t < 1; t++) {
+          for (int z = 0; z < 1; z++) {
+            for (int y = 0; y < 1; y++) {
+
+              // get fine CB
+              int x_coords_shift[4] = {x_coords[0] + (y + z + t + s) & 1, x_coords[1] + y, x_coords[2] + z, x_coords[3] + t};
+              int x_cb_local = linkIndex(x_coords_shift, arg.x_size);
+              int parity_local = (s + y + z + t) & 1;
+
+              // lol
+              val += arg.Cinv(0, xc_parity, xc_cb, xinv_spin_row, s, xinv_color_row, xinv_color_col) * arg.V(parity_local, x_cb_local, 0, jc_f, ic_c);
+              ++xinv_color_col;
+            }
+          }
+        }
+      }
+      arg.AV(parity, x_cb, s, ic_f, ic_c) = val;
+    }
+  }
+
+  template <typename Arg>
+  void ComputeKDAVCPU(Arg arg)
+  {
+    for (int parity = 0; parity < 2; parity++) {
+    #pragma omp parallel for
+      for (int x_cb=0; x_cb<arg.fineVolumeCB; x_cb++) {
+        for (int ic_f = 0; ic_f < Arg::fineColor; ic_f++) { // fine color
+          for (int ic_c = 0; ic_c < Arg::coarseColor; ic_c++) { // coarse color
+            computeKDAV(arg, parity, x_cb, ic_c, ic_f);
+          }
+        }
+      } // c/b volume
+    }   // parity
+  }
+
+  template <typename Arg>
+  __global__ void ComputeKDAVGPU(Arg arg)
+  {
+    int x_cb = blockDim.x*blockIdx.x + threadIdx.x;
+    if (x_cb >= arg.fineVolumeCB) return;
+
+    // flattened parity, fine color
+    int parity_ic_c = blockDim.y * blockIdx.y + threadIdx.y;
+    if (parity_ic_c >= 2 * Arg::coarseColor) return;
+    int parity = parity_ic_c % 2;
+    int ic_c = parity_ic_c / 2;
+
+    int ic_f = blockDim.z * blockIdx.z + threadIdx.z;
+    if (ic_f >= Arg::fineColor) return;
+
+    computeKDAV(arg, parity, x_cb, ic_c, ic_f);
+  }
+
   template<typename Arg>
   __device__ __host__ inline int virtualThreadIdx(const Arg &arg) {
     constexpr int warp_size = 32;
@@ -703,43 +789,89 @@ namespace quda {
           } // Fine color
         }
       } else { // Arg::fineSpin == 1
-        
-        // This is for staggered/asqtad only
-        // the KD op will even to even, odd to odd terms
 
-        const int s_c_row = arg.spin_map(0, parity);
+        if (Arg::fineSpinorUV::nSpin == 1) {
 
-        // the column is the opposite contribution
-        const int s_c_col = arg.spin_map(0, 1-parity);
+          // coarsening the staggered op
+          const int s_c_row = arg.spin_map(0, parity);
 
-        for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color 
+          // the column is the opposite contribution
+          const int s_c_col = arg.spin_map(0, 1-parity);
+
+          for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color 
 
 
-          if (dir == QUDA_BACKWARDS) {
+            if (dir == QUDA_BACKWARDS) {
 
-            auto V = make_tile_At<complex, false>(tile);
-            V.loadCS(arg.V, 0, 0, parity, x_cb, 0, k, i0);
+              auto V = make_tile_At<complex, false>(tile);
+              V.loadCS(arg.V, 0, 0, parity, x_cb, 0, k, i0);
 
-            // here UV is really UAV
-            auto UV = make_tile_B<complex, false>(tile);
-            UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
+              // here UV is really UAV
+              auto UV = make_tile_B<complex, false>(tile);
+              UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
 
-            vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(V, UV);
+              vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(V, UV);
 
-          } else {
+            } else {
 
-            auto AV = make_tile_At<complex, false>(tile);
-            AV.loadCS(arg.AV, 0, 0, parity, x_cb, 0, k, i0);
-            AV *= static_cast<Float>(-1.);
+              auto AV = make_tile_At<complex, false>(tile);
+              AV.loadCS(arg.AV, 0, 0, parity, x_cb, 0, k, i0);
+              AV *= static_cast<Float>(-1.);
 
-            auto UV = make_tile_B<complex, false>(tile);
-            UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
+              auto UV = make_tile_B<complex, false>(tile);
+              UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
 
-            vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(AV, UV);
+              vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(AV, UV);
+
+            }
+
+          }
+        } else {
+          // coarsening the KD op, UV::nSpin == 2
+
+          for (int k = 0; k < TileType::k; k+= TileType::K) { // Sum over fine color
+            // if dir == QUDA_BACKWARDS, we're doing V . UV, V in spin 1
+            if (dir == QUDA_BACKWARDS) {
+
+              // coarsening the staggered op
+              const int s_c_row = arg.spin_map(0, parity);
+
+              // reuse the same V
+              auto V = make_tile_At<complex, false>(tile);
+              V.loadCS(arg.V, 0, 0, s_c_row, x_cb, 0, k, i0);
+
+              for (int s_c_col = 0; s_c_col < Arg::fineSpinorUV::nSpin; s_c_col++) {
+
+                // here UV is really UAV
+                auto UV = make_tile_B<complex, false>(tile);
+                UV.loadCS(arg.UV, 0, 0, parity, x_cb, s_c_col, k, j0);
+
+                vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(V, UV);
+              }
+            } else {
+              // dir == QUDA_FORWARDS, we're doing AV * UV, both are spin 2,
+
+              for (int s_c_row = 0; s_c_row < Arg::fineSpinorUV::nSpin; s_c_row++) {
+
+                auto AV = make_tile_At<complex, false>(tile);
+                AV.loadCS(arg.AV, 0, 0, parity, x_cb, s_c_row, k, i0);
+                AV *= static_cast<Float>(-1.);
+
+                for (int s_c_col = 0; s_c_col < Arg::fineSpinorAV::nSpin; s_c_col++) {
+
+                  auto UV = make_tile_B<complex, false>(tile);
+                  UV.loadCS(arg.UV, 0, 0, parity, x_cb, s_c_col, k, j0);
+                  
+
+                  vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(AV, UV);
+                  
+                }
+              }
+            }
 
           }
 
-        }
+        } // Arg::spinorUV::nSpin 1 (stag op) or 2 (KD op)
       } // Arg::fineSpin == 4 or 1
 
     } else { // fine grid operator is a coarse operator
