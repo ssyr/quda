@@ -161,9 +161,8 @@ namespace quda {
     int coord[4];
     getCoords(coord, x_cb, arg.x_size, parity);
 
-    // UV spin is 4 for Wilson op, 4 for coarse op, 1 for staggered op, 2 for coarsening the KD op
     constexpr int uvSpin = Arg::fineSpinorUV::nSpin;
-    constexpr int avSpin = Arg::fineSpinorAV::nSpin;
+    constexpr int vSpin = Wtype::nSpin; // v or av
     constexpr int nFace = 1; // to do: nFace == 3 version for long links
 
     using complex = complex<typename Arg::Float>;
@@ -211,7 +210,7 @@ namespace quda {
           U.load(arg.U, dim, parity, x_cb, i0, k);
           // UV spin == the number of spins in W regardless of if it's 
           // from Wilson, staggered, or KD staggered
-          for (int s = 0; s < avSpin; s++) {  //Fine Spin
+          for (int s = 0; s < vSpin; s++) {  //Fine Spin
             auto W = make_tile_B<complex, true>(tile);
             W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, s, k, j0);
             UV[s].mma_nn(U, W);
@@ -243,7 +242,7 @@ namespace quda {
           U.load(arg.U, dim, parity, x_cb, i0, k);
           // UV spin == the number of spins in W regardless of if it's 
           // from Wilson, staggered, or KD staggered
-          for (int s = 0; s < avSpin; s++) {  //Fine Spin
+          for (int s = 0; s < vSpin; s++) {  //Fine Spin
             auto W = make_tile_B<complex, false>(tile);
             W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, s, k, j0);
             UV[s].mma_nn(U, W);
@@ -253,7 +252,20 @@ namespace quda {
 
     } // IN_PLACE / grabbing from ghost or not
 
-    for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
+    // staggered KD op
+    if (Arg::fineSpin == 1 && uvSpin == 2) {
+      // computing UV
+      if (vSpin == 1) {
+        // U connects even to odd, odd to even
+        // coarse spin 0 is from-even, spin 1 is from even
+        UV[0].saveCS(arg.UV, 0, 0, parity, x_cb, 1 - parity, i0, j0);
+      } else {
+        // compute UAV
+        for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, 1 - s, i0, j0);
+      }
+    } else {
+      for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
+    }
   } // computeUV
 
   template<int dim, QudaDirection dir, typename Arg>
@@ -597,7 +609,7 @@ namespace quda {
   }
 
   /**
-     Calculates the matrix Xinv V^{s,c'}(x) for KD fermions
+     Calculates the matrix Xinv^dagger V^{s,c'}(x) for KD fermions
      where indices are terrible and I'll figure it out later
   */
   template <typename Arg>
@@ -627,31 +639,49 @@ namespace quda {
     const int xc_parity = (xc_coords[0] + xc_coords[1] + xc_coords[2] + xc_coords[3]) & 1;
     const int xc_cb = linkIndex(xc_coords, arg.xc_size);
 
-    // Loop over each contribution from V
+    // ahhh this is all messed up.
+    // I'm taking care of both spins of AV, so I need to accumulate four
+
+    // Loop over coarse spin == whether or not we're accumulating from an even or odd fine site
 #pragma unroll
-    for (int s = 0; s < Arg::coarseSpin; s++) { // coarse spin row == fine parity
+    for (int s = 0; s < Arg::coarseSpin; s++) {
+
+      // initialize
       complex val = 0;
+
+      // Loop over each contribution from V
       int xinv_color_col = 0; // will equal 8 * jc_f + 4 * t + 2 * z + y as we go
 #pragma unroll
       for (int jc_f = 0; jc_f < Arg::fineColor; jc_f++) { // fine color
-        for (int t = 0; t < 1; t++) {
-          for (int z = 0; z < 1; z++) {
-            for (int y = 0; y < 1; y++) {
+#pragma unroll
+        for (int t = 0; t < 1; t++) { // t site in hypercube
+#pragma unroll
+          for (int z = 0; z < 1; z++) { // z site in hypercube
+#pragma unroll
+            for (int y = 0; y < 1; y++) { // y site in hypercube
 
               // get fine CB
-              int x_coords_shift[4] = {x_coords[0] + (y + z + t + s) & 1, x_coords[1] + y, x_coords[2] + z, x_coords[3] + t};
+              // From an conceptual standpoint, the first component should be {x_coords[0] + (y + z + t + s) & 1}.
+              // Under the hood, the `& 1` part just gets crunched away anyways.
+              int x_coords_shift[4] = {x_coords[0], x_coords[1] + y, x_coords[2] + z, x_coords[3] + t};
               int x_cb_local = linkIndex(x_coords_shift, arg.x_size);
-              int parity_local = (s + y + z + t) & 1;
 
-              // lol
-              val += arg.Cinv(0, xc_parity, xc_cb, xinv_spin_row, s, xinv_color_row, xinv_color_col) * arg.V(parity_local, x_cb_local, 0, jc_f, ic_c);
+              // val += conj(Cinv) * V --- conjugate index
+              auto xinv_conj = conj(arg.Cinv(0, xc_parity, xc_cb, s, xinv_spin_row, xinv_color_col, xinv_color_row));
+              val = cmac(xinv_conj, arg.V(s, x_cb_local, 0, jc_f, ic_c), val);
+
+              // original, non conjugated line
+              // val += arg.Cinv(0, xc_parity, xc_cb, xinv_spin_row, s, xinv_color_row, xinv_color_col) * arg.V(s, x_cb_local, 0, jc_f, ic_c);
+              
               ++xinv_color_col;
-            }
-          }
-        }
-      }
+            } // y site in hypercube
+          } // z site in hypercube
+        } // t site in hypercube
+      } // fine color
+
+      // store
       arg.AV(parity, x_cb, s, ic_f, ic_c) = val;
-    }
+    } // coarse spin == even or odd fine site
   }
 
   template <typename Arg>

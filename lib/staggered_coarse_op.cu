@@ -255,7 +255,7 @@ namespace quda {
     ColorSpinorParam UVparam(T.Vectors(location));
     UVparam.create = QUDA_ZERO_FIELD_CREATE;
     UVparam.location = location;
-    UVparam.nSpin *= 2;
+    UVparam.nSpin *= coarseKD ? 2 : 1;
     UVparam.setPrecision(T.Vectors(location).Precision());
     UVparam.mem_type = Y.MemType(); // allocate temporaries to match coarse-grid link field
 
@@ -375,8 +375,8 @@ namespace quda {
     if (XinvKD.Ncolor() != 16*fineColor)
       errorQuda("Invalid Nc %d", XinvKD.Ncolor());
 
-    constexpr int xinvColor = 16 * fineColor;
-    constexpr int xinvSpin = 1; // treat Xinv as a flat, "spinless" object even though it does have spin...
+    constexpr int xinvSpin = 2;
+    constexpr int xinvColor = 16 * fineColor / xinvSpin; // KD block DoF divided by spin
 
     if (dirac == QUDA_STAGGEREDKD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) {
       if (XinvKD.Precision() == QUDA_SINGLE_PRECISION) {
