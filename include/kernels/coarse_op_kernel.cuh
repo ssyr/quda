@@ -261,7 +261,7 @@ namespace quda {
         UV[0].saveCS(arg.UV, 0, 0, parity, x_cb, 1 - parity, i0, j0);
       } else {
         // compute UAV
-        for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, 1 - s, i0, j0);
+        for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
       }
     } else {
       for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
@@ -642,23 +642,29 @@ namespace quda {
     // ahhh this is all messed up.
     // I'm taking care of both spins of AV, so I need to accumulate four
 
-    // Loop over coarse spin == whether or not we're accumulating from an even or odd fine site
+    complex val[Arg::coarseSpin];
 #pragma unroll
     for (int s = 0; s < Arg::coarseSpin; s++) {
+      val[s] = 0;
+    }
 
-      // initialize
-      complex val = 0;
+#pragma unroll
+    for (int spin_bit = 0; spin_bit < 2; spin_bit++) {
 
       // Loop over each contribution from V
       int xinv_color_col = 0; // will equal 8 * jc_f + 4 * t + 2 * z + y as we go
 #pragma unroll
       for (int jc_f = 0; jc_f < Arg::fineColor; jc_f++) { // fine color
 #pragma unroll
-        for (int t = 0; t < 1; t++) { // t site in hypercube
+        for (int t = 0; t < 2; t++) { // t site in hypercube
 #pragma unroll
-          for (int z = 0; z < 1; z++) { // z site in hypercube
+          for (int z = 0; z < 2; z++) { // z site in hypercube
 #pragma unroll
-            for (int y = 0; y < 1; y++) { // y site in hypercube
+            for (int y = 0; y < 2; y++) { // y site in hypercube
+
+              int x_bit = (y + z + t) & 1;
+              if (spin_bit) x_bit = 1 - x_bit;
+              int parity_spinor = (x_bit + y + z + t) & 1;
 
               // get fine CB
               // From an conceptual standpoint, the first component should be {x_coords[0] + (y + z + t + s) & 1}.
@@ -666,12 +672,8 @@ namespace quda {
               int x_coords_shift[4] = {x_coords[0], x_coords[1] + y, x_coords[2] + z, x_coords[3] + t};
               int x_cb_local = linkIndex(x_coords_shift, arg.x_size);
 
-              // val += conj(Cinv) * V --- conjugate index
-              auto xinv_conj = conj(arg.Cinv(0, xc_parity, xc_cb, s, xinv_spin_row, xinv_color_col, xinv_color_row));
-              val = cmac(xinv_conj, arg.V(s, x_cb_local, 0, jc_f, ic_c), val);
-
-              // original, non conjugated line
-              // val += arg.Cinv(0, xc_parity, xc_cb, xinv_spin_row, s, xinv_color_row, xinv_color_col) * arg.V(s, x_cb_local, 0, jc_f, ic_c);
+              // val += Cinv * V
+              val[parity_spinor] = cmac(arg.Cinv(0, xc_parity, xc_cb, xinv_spin_row, parity_spinor, xinv_color_row, xinv_color_col), arg.V(parity_spinor, x_cb_local, 0, jc_f, ic_c), val[parity_spinor]);
               
               ++xinv_color_col;
             } // y site in hypercube
@@ -680,7 +682,9 @@ namespace quda {
       } // fine color
 
       // store
-      arg.AV(parity, x_cb, s, ic_f, ic_c) = val;
+#pragma unroll
+      for (int s = 0; s < Arg::coarseSpin; s++)
+        arg.AV(parity, x_cb, s, ic_f, ic_c) = val[s];
     } // coarse spin == even or odd fine site
   }
 
