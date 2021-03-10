@@ -27,14 +27,25 @@ namespace quda {
 
     enum HisqForceType {
       FORCE_ALL_LINK,
-      FORCE_MIDDLE_LINK,
+      FORCE_MIDDLE_LINK, // five link
+      FORCE_MIDDLE_LINK_SHORT, // three link
       FORCE_LEPAGE_MIDDLE_LINK,
-      FORCE_SIDE_LINK,
-      FORCE_SIDE_LINK_SHORT,
+      FORCE_SIDE_LINK, // five link
+      FORCE_SIDE_LINK_SHORT, // three link
+      FORCE_LEPAGE_SIDE_LINK,
       FORCE_LONG_LINK,
       FORCE_COMPLETE,
       FORCE_ONE_LINK,
       FORCE_INVALID
+    };
+
+    enum HisqPathCoefficients {
+      PATH_ONE_LINK = 0,
+      PATH_NAIK = 1,
+      PATH_THREE_LINK = 2,
+      PATH_FIVE_LINK = 3,
+      PATH_SEVEN_LINK = 4,
+      PATH_LEPAGE = 5
     };
 
     constexpr int opp_dir(int dir) { return 7-dir; }
@@ -58,21 +69,6 @@ namespace quda {
       case 3: updateCoords<3>(x, shift, arg); break;
       }
     }
-
-    //struct for holding the fattening path coefficients
-    template <typename real>
-    struct PathCoefficients {
-      const real one;
-      const real three;
-      const real five;
-      const real seven;
-      const real naik;
-      const real lepage;
-      PathCoefficients(const double *path_coeff_array)
-        : one(path_coeff_array[0]), naik(path_coeff_array[1]),
-          three(path_coeff_array[2]), five(path_coeff_array[3]),
-          seven(path_coeff_array[4]), lepage(path_coeff_array[5]) { }
-    };
 
     template <typename real_, int nColor_, QudaReconstructType reconstruct=QUDA_RECONSTRUCT_NO>
     struct BaseForceArg {
@@ -125,60 +121,124 @@ namespace quda {
       const F oProd;
       const F qProd;
       const F qPrev;
-      const real coeff;
-      const real accumu_coeff;
+      real coeff;
+      real accumu_coeff;
 
-      const bool p_mu;
-      const bool q_mu;
-      const bool q_prev;
+      bool p_mu;
+      bool q_mu;
+      bool q_prev;
 
-      FatLinkArg(GaugeField &force, const GaugeField &oProd, const GaugeField &link, real coeff, HisqForceType type)
-        : BaseForceArg(link, 0), outA(force), outB(force), pMu(oProd), p3(oProd), qMu(oProd),
-        oProd(oProd), qProd(oProd), qPrev(oProd), coeff(coeff), accumu_coeff(0),
-        p_mu(false), q_mu(false), q_prev(false)
-      { if (type != FORCE_ONE_LINK) errorQuda("This constructor is for FORCE_ONE_LINK"); }
+      // One unified constructor, for my sanity
+      FatLinkArg(GaugeField& outA, GaugeField& outB, GaugeField& pMu, GaugeField& p3, GaugeField& qMu, const GaugeField& oProd, const GaugeField& qProd,
+                  const GaugeField& qPrev, const GaugeField& link, const int overlap, const real coeff, const real accumu_coeff, const bool p_mu, const bool q_mu, const bool q_prev)
+        : BaseForceArg(link, overlap), outA(outA), outB(outB), pMu(pMu), p3(p3), qMu(qMu), oProd(oProd), qProd(qProd),
+        qPrev(qPrev), coeff(coeff),
+          accumu_coeff(accumu_coeff), p_mu(p_mu), q_mu(q_mu), q_prev(q_prev)
+      { ; }
 
-      FatLinkArg(GaugeField &newOprod, GaugeField &pMu, GaugeField &P3, GaugeField &qMu,
-                 const GaugeField &oProd, const GaugeField &qPrev, const GaugeField &link,
-                 real coeff, int overlap, HisqForceType type)
-        : BaseForceArg(link, overlap), outA(newOprod), outB(newOprod), pMu(pMu), p3(P3), qMu(qMu),
-        oProd(oProd), qProd(oProd), qPrev(qPrev), coeff(coeff), accumu_coeff(0), p_mu(true), q_mu(true), q_prev(true)
-      { if (type != FORCE_MIDDLE_LINK) errorQuda("This constructor is for FORCE_MIDDLE_LINK"); }
+      static FatLinkArg<real, nColor, reconstruct> getOneLink(GaugeField &newOprod, const GaugeField& oProd, const GaugeField& link, const double* path_coeff_array)
+      {
+        const int overlap = 0;
+        const real coeff = path_coeff_array[PATH_ONE_LINK];
+        const real accumu_coeff = 0; // dummy
+        const bool p_mu = false; // dummy
+        const bool q_mu = false; // dummy
+        const bool q_prev = false; // dummy
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, newOprod, newOprod, newOprod, oProd, oProd, oProd, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+      }
 
-      FatLinkArg(GaugeField &newOprod, GaugeField &pMu, GaugeField &P3, GaugeField &qMu,
-                 const GaugeField &oProd, const GaugeField &link,
-                 real coeff, int overlap, HisqForceType type)
-        : BaseForceArg(link, overlap), outA(newOprod), outB(newOprod), pMu(pMu), p3(P3), qMu(qMu),
-        oProd(oProd), qProd(oProd), qPrev(qMu), coeff(coeff), accumu_coeff(0), p_mu(true), q_mu(true), q_prev(false)
-      { if (type != FORCE_MIDDLE_LINK) errorQuda("This constructor is for FORCE_MIDDLE_LINK"); }
+      // sig direction, end of staple
+      static FatLinkArg<real, nColor, reconstruct> getThreeLinkMiddle(GaugeField &newOprod, GaugeField &pMu, GaugeField &P3, GaugeField &qMu,
+                 const GaugeField &oProd, const GaugeField &link, const double* path_coeff_array)
+      {
+        const int overlap = 2;
+        const real coeff = -path_coeff_array[PATH_THREE_LINK];
+        const real accumu_coeff = 0; // dummy
+        const bool p_mu = true;      // specifies non-lepage
+        const bool q_mu = true;      // specifies non-lepage
+        const bool q_prev = false;   // specifies 3 link
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, pMu, P3, qMu, oProd, oProd, qMu, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+      }
 
-      FatLinkArg(GaugeField &newOprod, GaugeField &P3, const GaugeField &oProd,
-                 const GaugeField &qPrev, const GaugeField &link,
-                 real coeff, int overlap, HisqForceType type)
-        : BaseForceArg(link, overlap), outA(newOprod), outB(newOprod), pMu(P3), p3(P3), qMu(qPrev),
-        oProd(oProd), qProd(oProd), qPrev(qPrev), coeff(coeff), accumu_coeff(0), p_mu(false), q_mu(false), q_prev(true)
-      { if (type != FORCE_LEPAGE_MIDDLE_LINK) errorQuda("This constructor is for FORCE_MIDDLE_LINK"); }
+      // sig direction, end of staple
+      static FatLinkArg<real, nColor, reconstruct> getFiveLinkMiddle(GaugeField &newOprod, GaugeField &pMu, GaugeField &P3, GaugeField &qMu,
+                 const GaugeField &oProd, const GaugeField &qPrev, const GaugeField &link, const double* path_coeff_array)
+      {
+        const int overlap = 1;
+        const real coeff = path_coeff_array[PATH_FIVE_LINK];
+        const real accumu_coeff = 0; // dummy
+        const bool p_mu = true;      // specifies non-lepage
+        const bool q_mu = true;      // specifies non-lepage
+        const bool q_prev = true;    // specifies 5 link (and that intermediates from 3 link exist)
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, pMu, P3, qMu, oProd, oProd, qPrev, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+      }
 
-      FatLinkArg(GaugeField &newOprod, GaugeField &shortP, const GaugeField &P3,
-                 const GaugeField &qProd, const GaugeField &link, real coeff, real accumu_coeff, int overlap, HisqForceType type)
-        : BaseForceArg(link, overlap), outA(newOprod), outB(shortP), pMu(P3), p3(P3), qMu(qProd), oProd(qProd), qProd(qProd),
-        qPrev(qProd), coeff(coeff), accumu_coeff(accumu_coeff),
-        p_mu(false), q_mu(false), q_prev(false)
-      { if (type != FORCE_SIDE_LINK) errorQuda("This constructor is for FORCE_SIDE_LINK or FORCE_ALL_LINK"); }
+      // sig and rho directions --- end of staple and normal piece
+      static FatLinkArg<real, nColor, reconstruct> getSevenLinkAll(GaugeField &newOprod, GaugeField &shortP, const GaugeField &oProd, const GaugeField &qPrev,
+                 const GaugeField &link, const double* path_coeff_array)
+      {
+        const int overlap = 1;
+        const real coeff = path_coeff_array[PATH_SEVEN_LINK];
+        const real accumu_coeff = path_coeff_array[PATH_FIVE_LINK] != 0 ? path_coeff_array[PATH_SEVEN_LINK] / path_coeff_array[PATH_FIVE_LINK] : 0;
+        const bool p_mu = false; // dummy
+        const bool q_mu = false; // dummy
+        const bool q_prev = false; // dummy
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, shortP, shortP, shortP, shortP, oProd, qPrev, qPrev, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+      }
 
-      FatLinkArg(GaugeField &newOprod, GaugeField &P3, const GaugeField &link,
-                 real coeff, int overlap, HisqForceType type)
-        : BaseForceArg(link, overlap), outA(newOprod), outB(newOprod),
-        pMu(P3), p3(P3), qMu(P3), oProd(P3), qProd(P3), qPrev(P3), coeff(coeff), accumu_coeff(0.0),
-        p_mu(false), q_mu(false), q_prev(false)
-      { if (type != FORCE_SIDE_LINK_SHORT) errorQuda("This constructor is for FORCE_SIDE_LINK_SHORT"); }
+      // sig direction -- end of Lepage "staple"
+      static FatLinkArg<real, nColor, reconstruct> getLepageMiddle(GaugeField &newOprod, GaugeField &P3, const GaugeField &oProd,
+                 const GaugeField &qPrev, const GaugeField &link, const double* path_coeff_array)
+      {
+        const int overlap = 2;
+        const real coeff = path_coeff_array[PATH_LEPAGE];
+        const real accumu_coeff = 0; // dummy
+        const bool p_mu = false;     // specifies lepage
+        const bool q_mu = false;     // specifies lepage
+        const bool q_prev = true;    // specifies that intermediates from 3 link exist, I think
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, P3, P3, P3, oProd, oProd, qPrev, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+      }
 
-      FatLinkArg(GaugeField &newOprod, GaugeField &shortP, const GaugeField &oProd, const GaugeField &qPrev,
-                 const GaugeField &link, real coeff, real accumu_coeff, int overlap, HisqForceType type, bool dummy)
-        : BaseForceArg(link, overlap), outA(newOprod), outB(shortP), oProd(oProd), qPrev(qPrev),
-        pMu(shortP), p3(shortP), qMu(qPrev), qProd(qPrev), // dummy
-        coeff(coeff), accumu_coeff(accumu_coeff), p_mu(false), q_mu(false), q_prev(false)
-      { if (type != FORCE_ALL_LINK) errorQuda("This constructor is for FORCE_ALL_LINK"); }
+      // nu pieces, normal to sig direction
+      static FatLinkArg<real, nColor, reconstruct> getFiveLinkSide(GaugeField &newOprod, GaugeField &shortP, const GaugeField &P3,
+                 const GaugeField &qProd, const GaugeField &link, const double* path_coeff_array)
+      {
+        const int overlap = 1;
+        const real coeff = -path_coeff_array[PATH_FIVE_LINK];
+        const real accumu_coeff = path_coeff_array[PATH_THREE_LINK] != 0 ? path_coeff_array[PATH_FIVE_LINK] / path_coeff_array[PATH_THREE_LINK] : 0;
+        const bool p_mu = false;     // dummy
+        const bool q_mu = false;     // dummy
+        const bool q_prev = false;    // dummy
+        // the const_cast are just to get it to compile and are a side effect of keeping some nice naming conventions... to be cleaned up
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, shortP, const_cast<GaugeField&>(P3), const_cast<GaugeField&>(P3), const_cast<GaugeField&>(P3), qProd, qProd, qProd, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+      }
+
+      // mu pieces, normal to sig direction; specific to Lepage term
+      static FatLinkArg<real, nColor, reconstruct> getLepageSide(GaugeField &newOprod, GaugeField &shortP, const GaugeField &P3,
+                 const GaugeField &qProd, const GaugeField &link, const double* path_coeff_array)
+      {
+        const int overlap = 2;
+        const real coeff = -path_coeff_array[PATH_LEPAGE];
+        const real accumu_coeff = path_coeff_array[PATH_THREE_LINK] != 0 ? path_coeff_array[PATH_LEPAGE] / path_coeff_array[PATH_THREE_LINK] : 0;
+        const bool p_mu = false;     // dummy
+        const bool q_mu = false;     // dummy
+        const bool q_prev = false;    // dummy
+        // the const_cast are just to get it to compile and are a side effect of keeping some nice naming conventions... to be cleaned up
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, shortP, const_cast<GaugeField&>(P3), const_cast<GaugeField&>(P3), const_cast<GaugeField&>(P3), qProd, qProd, qProd, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+      }  
+
+      // mu pieces --- normal to sig; also known as "short side"
+      static FatLinkArg<real, nColor, reconstruct> getThreeLinkSide(GaugeField &newOprod, GaugeField &P3, const GaugeField &link, const double* path_coeff_array)
+      {
+        const int overlap = 1;
+        const real coeff = path_coeff_array[PATH_THREE_LINK];
+        const real accumu_coeff = 0; // dummy
+        const bool p_mu = false;     // dummy
+        const bool q_mu = false;     // dummy
+        const bool q_prev = false;    // dummy
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, P3, P3, P3, link, link, link, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+      }
+
 
     };
 
@@ -751,17 +811,8 @@ namespace quda {
                        const GaugeField &oprod, const GaugeField &link,
                        const double *path_coeff_array)
       {
-        PathCoefficients<real> act_path_coeff(path_coeff_array);
-        real OneLink = act_path_coeff.one;
-        real ThreeSt = act_path_coeff.three;
-        real mThreeSt = -ThreeSt;
-        real FiveSt  = act_path_coeff.five;
-        real mFiveSt  = -FiveSt;
-        real SevenSt = act_path_coeff.seven;
-        real Lepage  = act_path_coeff.lepage;
-        real mLepage  = -Lepage;
 
-        FatLinkArg<real, nColor> arg(newOprod, oprod, link, OneLink, FORCE_ONE_LINK);
+        auto arg = FatLinkArg<real, nColor>::getOneLink(newOprod, oprod, link, path_coeff_array);
         FatLinkForce<decltype(arg)> oneLink(arg, link, 0, 0, FORCE_ONE_LINK);
         oneLink.apply(0);
 
@@ -771,8 +822,8 @@ namespace quda {
 
             //3-link
             //Kernel A: middle link
-            FatLinkArg<real, nColor> middleLinkArg( newOprod, Pmu, P3, Qmu, oprod, link, mThreeSt, 2, FORCE_MIDDLE_LINK);
-            FatLinkForce<decltype(arg)> middleLink(middleLinkArg, link, sig, mu, FORCE_MIDDLE_LINK);
+            auto middleThreeLinkArg = FatLinkArg<real, nColor>::getThreeLinkMiddle( newOprod, Pmu, P3, Qmu, oprod, link, path_coeff_array);
+            FatLinkForce<decltype(arg)> middleLink(middleThreeLinkArg, link, sig, mu, FORCE_MIDDLE_LINK);
             middleLink.apply(0);
 
             for (int nu=0; nu < 8; nu++) {
@@ -780,41 +831,41 @@ namespace quda {
 
               //5-link: middle link
               //Kernel B
-              FatLinkArg<real, nColor> middleLinkArg( newOprod, Pnumu, P5, Qnumu, Pmu, Qmu, link, FiveSt, 1, FORCE_MIDDLE_LINK);
-              FatLinkForce<decltype(arg)> middleLink(middleLinkArg, link, sig, nu, FORCE_MIDDLE_LINK);
+              auto middleFiveLinkArg = FatLinkArg<real, nColor>::getFiveLinkMiddle( newOprod, Pnumu, P5, Qnumu, Pmu, Qmu, link, path_coeff_array);
+              FatLinkForce<decltype(arg)> middleLink(middleFiveLinkArg, link, sig, nu, FORCE_MIDDLE_LINK);
               middleLink.apply(0);
 
               for (int rho = 0; rho < 8; rho++) {
                 if (rho == sig || rho == opp_dir(sig) || rho == mu || rho == opp_dir(mu) || rho == nu || rho == opp_dir(nu)) continue;
 
                 //7-link: middle link and side link
-                FatLinkArg<real, nColor> arg(newOprod, P5, Pnumu, Qnumu, link, SevenSt, FiveSt != 0 ? SevenSt/FiveSt : 0, 1, FORCE_ALL_LINK, true);
-                FatLinkForce<decltype(arg)> all(arg, link, sig, rho, FORCE_ALL_LINK);
+                auto allSevenLinkArg = FatLinkArg<real, nColor>::getSevenLinkAll(newOprod, P5, Pnumu, Qnumu, link, path_coeff_array);
+                FatLinkForce<decltype(arg)> all(allSevenLinkArg, link, sig, rho, FORCE_ALL_LINK);
                 all.apply(0);
 
               }//rho
 
               //5-link: side link
-              FatLinkArg<real, nColor> arg(newOprod, P3, P5, Qmu, link, mFiveSt, (ThreeSt != 0 ? FiveSt/ThreeSt : 0), 1, FORCE_SIDE_LINK);
-              FatLinkForce<decltype(arg)> side(arg, link, sig, nu, FORCE_SIDE_LINK);
+              auto sideFiveLinkArg = FatLinkArg<real, nColor>::getFiveLinkSide(newOprod, P3, P5, Qmu, link, path_coeff_array);
+              FatLinkForce<decltype(arg)> side(sideFiveLinkArg, link, sig, nu, FORCE_SIDE_LINK);
               side.apply(0);
 
             } //nu
 
             //lepage
-            if (Lepage != 0.) {
-              FatLinkArg<real, nColor> middleLinkArg( newOprod, P5, Pmu, Qmu, link, Lepage, 2, FORCE_LEPAGE_MIDDLE_LINK);
-              FatLinkForce<decltype(arg)> middleLink(middleLinkArg, link, sig, mu, FORCE_LEPAGE_MIDDLE_LINK);
+            if (path_coeff_array[PATH_LEPAGE] != 0.) {
+              auto middleLepageArg = FatLinkArg<real, nColor>::getLepageMiddle( newOprod, P5, Pmu, Qmu, link, path_coeff_array);
+              FatLinkForce<decltype(arg)> middleLink(middleLepageArg, link, sig, mu, FORCE_LEPAGE_MIDDLE_LINK);
               middleLink.apply(0);
 
-              FatLinkArg<real, nColor> arg(newOprod, P3, P5, Qmu, link, mLepage, (ThreeSt != 0 ? Lepage/ThreeSt : 0), 2, FORCE_SIDE_LINK);
-              FatLinkForce<decltype(arg)> side(arg, link, sig, mu, FORCE_SIDE_LINK);
+              auto sideLepageArg = FatLinkArg<real, nColor>::getLepageSide(newOprod, P3, P5, Qmu, link, path_coeff_array);
+              FatLinkForce<decltype(arg)> side(sideLepageArg, link, sig, mu, FORCE_SIDE_LINK); // not a typo for now
               side.apply(0);
             } // Lepage != 0.0
 
             // 3-link side link
-            FatLinkArg<real, nColor> arg(newOprod, P3, link, ThreeSt, 1, FORCE_SIDE_LINK_SHORT);
-            FatLinkForce<decltype(arg)> side(arg, P3, sig, mu, FORCE_SIDE_LINK_SHORT);
+            auto sideThreeLinkArg = FatLinkArg<real, nColor>::getThreeLinkSide(newOprod, P3, link, path_coeff_array);
+            FatLinkForce<decltype(arg)> side(sideThreeLinkArg, P3, sig, mu, FORCE_SIDE_LINK_SHORT);
             side.apply(0);
           }//mu
         }//sig
