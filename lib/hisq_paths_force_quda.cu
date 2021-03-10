@@ -124,107 +124,85 @@ namespace quda {
       real coeff;
       real accumu_coeff;
 
-      bool p_mu;
-      bool q_mu;
+      bool p_mu_q_mu;
       bool q_prev;
 
       // One unified constructor, for my sanity
       FatLinkArg(GaugeField& outA, GaugeField& outB, GaugeField& pMu, GaugeField& p3, GaugeField& qMu, const GaugeField& oProd, const GaugeField& qProd,
-                  const GaugeField& qPrev, const GaugeField& link, const int overlap, const real coeff, const real accumu_coeff, const bool p_mu, const bool q_mu, const bool q_prev)
+                  const GaugeField& qPrev, const GaugeField& link, const int overlap, const real coeff, const real accumu_coeff = 0, const bool p_mu_q_mu = false, const bool q_prev = false)
         : BaseForceArg(link, overlap), outA(outA), outB(outB), pMu(pMu), p3(p3), qMu(qMu), oProd(oProd), qProd(qProd),
         qPrev(qPrev), coeff(coeff),
-          accumu_coeff(accumu_coeff), p_mu(p_mu), q_mu(q_mu), q_prev(q_prev)
+          accumu_coeff(accumu_coeff), p_mu_q_mu(p_mu_q_mu), q_prev(q_prev)
       { ; }
 
       static FatLinkArg<real, nColor, reconstruct> getOneLink(GaugeField &newOprod, const GaugeField& oProd, const GaugeField& link, const double* path_coeff_array)
       {
         const int overlap = 0;
         const real coeff = path_coeff_array[PATH_ONE_LINK];
-        const real accumu_coeff = 0; // dummy
-        const bool p_mu = false; // dummy
-        const bool q_mu = false; // dummy
-        const bool q_prev = false; // dummy
-        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, newOprod, newOprod, newOprod, oProd, oProd, oProd, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, newOprod, newOprod, newOprod, oProd, oProd, oProd, link, overlap, coeff);
       }
 
       // sig direction, end of staple
-      static FatLinkArg<real, nColor, reconstruct> getThreeLinkMiddle(GaugeField &newOprod, GaugeField &pMu, GaugeField &P3, GaugeField &qMu,
+      static FatLinkArg<real, nColor, reconstruct> getThreeLinkMiddle(GaugeField &newOprod, GaugeField &Pmu, GaugeField &P3, GaugeField &Qmu,
                  const GaugeField &oProd, const GaugeField &link, const double* path_coeff_array)
       {
         const int overlap = 2;
         const real coeff = -path_coeff_array[PATH_THREE_LINK];
-        const real accumu_coeff = 0; // dummy
-        const bool p_mu = true;      // specifies non-lepage
-        const bool q_mu = true;      // specifies non-lepage
+        const bool p_mu_q_mu = true;      // specifies non-lepage
         const bool q_prev = false;   // specifies 3 link
-        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, pMu, P3, qMu, oProd, oProd, qMu, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, Pmu, P3, Qmu, oProd, oProd, Qmu, link, overlap, coeff, 0, p_mu_q_mu, q_prev);
       }
 
       // sig direction, end of staple
-      static FatLinkArg<real, nColor, reconstruct> getFiveLinkMiddle(GaugeField &newOprod, GaugeField &pMu, GaugeField &P3, GaugeField &qMu,
-                 const GaugeField &oProd, const GaugeField &qPrev, const GaugeField &link, const double* path_coeff_array)
+      static FatLinkArg<real, nColor, reconstruct> getFiveLinkMiddle(GaugeField &newOprod, GaugeField &Pnumu, GaugeField &P5, GaugeField &Qmunu,
+                 const GaugeField &Pmu, const GaugeField &Qmu, const GaugeField &link, const double* path_coeff_array)
       {
         const int overlap = 1;
         const real coeff = path_coeff_array[PATH_FIVE_LINK];
-        const real accumu_coeff = 0; // dummy
-        const bool p_mu = true;      // specifies non-lepage
-        const bool q_mu = true;      // specifies non-lepage
+        const bool p_mu_q_mu = true;      // specifies non-lepage
         const bool q_prev = true;    // specifies 5 link (and that intermediates from 3 link exist)
-        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, pMu, P3, qMu, oProd, oProd, qPrev, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, Pnumu, P5, Qmunu, Pmu, Pmu, Qmu, link, overlap, coeff, 0, p_mu_q_mu, q_prev);
       }
 
       // sig and rho directions --- end of staple and normal piece
-      static FatLinkArg<real, nColor, reconstruct> getSevenLinkAll(GaugeField &newOprod, GaugeField &shortP, const GaugeField &oProd, const GaugeField &qPrev,
+      static FatLinkArg<real, nColor, reconstruct> getSevenLinkAll(GaugeField &newOprod, GaugeField &P5, const GaugeField &Pnumu, const GaugeField &Qmunu,
                  const GaugeField &link, const double* path_coeff_array)
       {
         const int overlap = 1;
         const real coeff = path_coeff_array[PATH_SEVEN_LINK];
         const real accumu_coeff = path_coeff_array[PATH_FIVE_LINK] != 0 ? path_coeff_array[PATH_SEVEN_LINK] / path_coeff_array[PATH_FIVE_LINK] : 0;
-        const bool p_mu = false; // dummy
-        const bool q_mu = false; // dummy
-        const bool q_prev = false; // dummy
-        return FatLinkArg<real, nColor, reconstruct>(newOprod, shortP, shortP, shortP, shortP, oProd, qPrev, qPrev, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
-      }
-
-      // sig direction -- end of Lepage "staple"
-      static FatLinkArg<real, nColor, reconstruct> getLepageMiddle(GaugeField &newOprod, GaugeField &P3, const GaugeField &oProd,
-                 const GaugeField &qPrev, const GaugeField &link, const double* path_coeff_array)
-      {
-        const int overlap = 2;
-        const real coeff = path_coeff_array[PATH_LEPAGE];
-        const real accumu_coeff = 0; // dummy
-        const bool p_mu = false;     // specifies lepage
-        const bool q_mu = false;     // specifies lepage
-        const bool q_prev = true;    // specifies that intermediates from 3 link exist, I think
-        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, P3, P3, P3, oProd, oProd, qPrev, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, P5, P5, P5, P5, Pnumu, Qmunu, Qmunu, link, overlap, coeff, accumu_coeff);
       }
 
       // nu pieces, normal to sig direction
-      static FatLinkArg<real, nColor, reconstruct> getFiveLinkSide(GaugeField &newOprod, GaugeField &shortP, const GaugeField &P3,
-                 const GaugeField &qProd, const GaugeField &link, const double* path_coeff_array)
+      static FatLinkArg<real, nColor, reconstruct> getFiveLinkSide(GaugeField &newOprod, GaugeField &P3, GaugeField &P5,
+                 const GaugeField &Qmu, const GaugeField &link, const double* path_coeff_array)
       {
         const int overlap = 1;
         const real coeff = -path_coeff_array[PATH_FIVE_LINK];
         const real accumu_coeff = path_coeff_array[PATH_THREE_LINK] != 0 ? path_coeff_array[PATH_FIVE_LINK] / path_coeff_array[PATH_THREE_LINK] : 0;
-        const bool p_mu = false;     // dummy
-        const bool q_mu = false;     // dummy
-        const bool q_prev = false;    // dummy
-        // the const_cast are just to get it to compile and are a side effect of keeping some nice naming conventions... to be cleaned up
-        return FatLinkArg<real, nColor, reconstruct>(newOprod, shortP, const_cast<GaugeField&>(P3), const_cast<GaugeField&>(P3), const_cast<GaugeField&>(P3), qProd, qProd, qProd, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, P3, P5, P5, P5, Qmu, Qmu, Qmu, link, overlap, coeff, accumu_coeff);
+      }
+
+      // sig direction -- end of Lepage "staple"
+      static FatLinkArg<real, nColor, reconstruct> getLepageMiddle(GaugeField &newOprod, GaugeField &P5, const GaugeField &Pmu,
+                 const GaugeField &Qmu, const GaugeField &link, const double* path_coeff_array)
+      {
+        const int overlap = 2;
+        const real coeff = path_coeff_array[PATH_LEPAGE];
+        const bool p_mu_q_mu = false;     // specifies lepage
+        const bool q_prev = true;    // specifies that intermediates from 3 link exist, I think
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, P5, P5, P5, Pmu, Pmu, Qmu, link, overlap, coeff, 0, p_mu_q_mu, q_prev);
       }
 
       // mu pieces, normal to sig direction; specific to Lepage term
-      static FatLinkArg<real, nColor, reconstruct> getLepageSide(GaugeField &newOprod, GaugeField &shortP, const GaugeField &P3,
-                 const GaugeField &qProd, const GaugeField &link, const double* path_coeff_array)
+      static FatLinkArg<real, nColor, reconstruct> getLepageSide(GaugeField &newOprod, GaugeField &P3, GaugeField &P5,
+                 const GaugeField &Qmu, const GaugeField &link, const double* path_coeff_array)
       {
         const int overlap = 2;
         const real coeff = -path_coeff_array[PATH_LEPAGE];
         const real accumu_coeff = path_coeff_array[PATH_THREE_LINK] != 0 ? path_coeff_array[PATH_LEPAGE] / path_coeff_array[PATH_THREE_LINK] : 0;
-        const bool p_mu = false;     // dummy
-        const bool q_mu = false;     // dummy
-        const bool q_prev = false;    // dummy
-        // the const_cast are just to get it to compile and are a side effect of keeping some nice naming conventions... to be cleaned up
-        return FatLinkArg<real, nColor, reconstruct>(newOprod, shortP, const_cast<GaugeField&>(P3), const_cast<GaugeField&>(P3), const_cast<GaugeField&>(P3), qProd, qProd, qProd, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, P3, P5, P5, P5, Qmu, Qmu, Qmu, link, overlap, coeff, accumu_coeff);
       }  
 
       // mu pieces --- normal to sig; also known as "short side"
@@ -232,11 +210,7 @@ namespace quda {
       {
         const int overlap = 1;
         const real coeff = path_coeff_array[PATH_THREE_LINK];
-        const real accumu_coeff = 0; // dummy
-        const bool p_mu = false;     // dummy
-        const bool q_mu = false;     // dummy
-        const bool q_prev = false;    // dummy
-        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, P3, P3, P3, link, link, link, link, overlap, coeff, accumu_coeff, p_mu, q_mu, q_prev);
+        return FatLinkArg<real, nColor, reconstruct>(newOprod, newOprod, P3, P3, P3, link, link, link, link, overlap, coeff);
       }
 
 
@@ -397,7 +371,7 @@ namespace quda {
      *   (Lepage)    else                  (2, 0)
      *
      ****************************************************************************/
-    template <int sig_positive, int mu_positive, bool pMu, bool qMu, bool qPrev, typename Arg>
+    template <int sig_positive, int mu_positive, bool pMuqMu, bool qPrev, typename Arg>
     __global__ void middleLinkKernel(Arg arg)
     {
       typedef Matrix<complex<typename Arg::real>, Arg::nColor> Link;
@@ -455,7 +429,7 @@ namespace quda {
 
       Link Ow = !mu_positive ? Ubc*Oy : conj(Ubc)*Oy;
 
-      if (pMu) arg.pMu(0, point_b, 1-parity) = Ow;
+      if (pMuqMu /* pMu */) arg.pMu(0, point_b, 1-parity) = Ow;
 
       arg.p3(0, e_cb, parity) = sig_positive ? Uab*Ow : conj(Uab)*Ow;
 
@@ -464,14 +438,14 @@ namespace quda {
 
       if (!qPrev) {
         if (sig_positive) Oy = Ow*Uad;
-        if ( qMu ) arg.qMu(0, e_cb, parity) = Uad;
+        if ( pMuqMu /*qMu*/ ) arg.qMu(0, e_cb, parity) = Uad;
       } else {
         Link Ox;
-        if ( qMu || sig_positive ) {
+        if ( pMuqMu /* qMu */ || sig_positive ) {
           Oy = arg.qPrev(0, point_d, 1-parity);
           Ox = Oy*Uad;
         }
-        if ( qMu ) arg.qMu(0, e_cb, parity) = Ox;
+        if ( pMuqMu /* qMu */ ) arg.qMu(0, e_cb, parity) = Ox;
         if (sig_positive) Oy = Ow*Ox;
       }
 
@@ -629,7 +603,7 @@ namespace quda {
         std::stringstream aux;
         aux << meta.AuxString() << comm_dim_partitioned_string() << ",threads=" << arg.threads;
         if (type == FORCE_MIDDLE_LINK || type == FORCE_LEPAGE_MIDDLE_LINK)
-          aux << ",sig=" << arg.sig << ",mu=" << arg.mu << ",pMu=" << arg.p_mu << ",q_muu=" << arg.q_mu << ",q_prev=" << arg.q_prev;
+          aux << ",sig=" << arg.sig << ",mu=" << arg.mu << ",pMuqMu=" << arg.p_mu_q_mu << ",q_prev=" << arg.q_prev;
         else if (type != FORCE_ONE_LINK)
           aux << ",mu=" << arg.mu; // no sig dependence needed for side link
 
@@ -663,38 +637,47 @@ namespace quda {
             qudaLaunchKernel(allLinkKernel<0,0,Arg>, tp, stream, arg);
           break;
         case FORCE_MIDDLE_LINK:
-          if (!arg.p_mu || !arg.q_mu) errorQuda("Expect p_mu=%d and q_mu=%d to both be true", arg.p_mu, arg.q_mu);
+        {
+          if (!arg.p_mu_q_mu) errorQuda("Expect p_mu_q_mu=%d to both be true", arg.p_mu_q_mu);
+          constexpr bool p_mu_q_mu = true;
           if (arg.q_prev) {
+            constexpr bool q_prev = true;
             if (goes_forward(arg.sig) && goes_forward(arg.mu))
-              qudaLaunchKernel(middleLinkKernel<1,1,true,true,true,Arg>, tp, stream, arg);
+              qudaLaunchKernel(middleLinkKernel<1,1,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
             else if (goes_forward(arg.sig) && goes_backward(arg.mu))
-              qudaLaunchKernel(middleLinkKernel<1,0,true,true,true,Arg>, tp, stream, arg);
+              qudaLaunchKernel(middleLinkKernel<1,0,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
             else if (goes_backward(arg.sig) && goes_forward(arg.mu))
-              qudaLaunchKernel(middleLinkKernel<0,1,true,true,true,Arg>, tp, stream, arg);
+              qudaLaunchKernel(middleLinkKernel<0,1,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
             else
-              qudaLaunchKernel(middleLinkKernel<0,0,true,true,true,Arg>, tp, stream, arg);
+              qudaLaunchKernel(middleLinkKernel<0,0,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
           } else {
+            constexpr bool q_prev = false;
             if (goes_forward(arg.sig) && goes_forward(arg.mu))
-              qudaLaunchKernel(middleLinkKernel<1,1,true,true,false,Arg>, tp, stream, arg);
+              qudaLaunchKernel(middleLinkKernel<1,1,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
             else if (goes_forward(arg.sig) && goes_backward(arg.mu))
-              qudaLaunchKernel(middleLinkKernel<1,0,true,true,false,Arg>, tp, stream, arg);
+              qudaLaunchKernel(middleLinkKernel<1,0,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
             else if (goes_backward(arg.sig) && goes_forward(arg.mu))
-              qudaLaunchKernel(middleLinkKernel<0,1,true,true,false,Arg>, tp, stream, arg);
+              qudaLaunchKernel(middleLinkKernel<0,1,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
             else
-              qudaLaunchKernel(middleLinkKernel<0,0,true,true,false,Arg>, tp, stream, arg);
+              qudaLaunchKernel(middleLinkKernel<0,0,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
           }
+        }
           break;
         case FORCE_LEPAGE_MIDDLE_LINK:
-          if (arg.p_mu || arg.q_mu || !arg.q_prev)
-            errorQuda("Expect p_mu=%d and q_mu=%d to both be false and q_prev=%d true", arg.p_mu, arg.q_mu, arg.q_prev);
+        {
+          if (arg.p_mu_q_mu || !arg.q_prev)
+            errorQuda("Expect p_mu_q_mu=%d to be false and q_prev=%d true", arg.p_mu_q_mu, arg.q_prev);
+          constexpr bool p_mu_q_mu = false;
+          constexpr bool q_prev = true;
           if (goes_forward(arg.sig) && goes_forward(arg.mu))
-            qudaLaunchKernel(middleLinkKernel<1,1,false,false,true,Arg>, tp, stream, arg);
+            qudaLaunchKernel(middleLinkKernel<1,1,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
           else if (goes_forward(arg.sig) && goes_backward(arg.mu))
-            qudaLaunchKernel(middleLinkKernel<1,0,false,false,true,Arg>, tp, stream, arg);
+            qudaLaunchKernel(middleLinkKernel<1,0,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
           else if (goes_backward(arg.sig) && goes_forward(arg.mu))
-            qudaLaunchKernel(middleLinkKernel<0,1,false,false,true,Arg>, tp, stream, arg);
+            qudaLaunchKernel(middleLinkKernel<0,1,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
           else
-            qudaLaunchKernel(middleLinkKernel<0,0,false,false,true,Arg>, tp, stream, arg);
+            qudaLaunchKernel(middleLinkKernel<0,0,p_mu_q_mu,q_prev,Arg>, tp, stream, arg);
+        }
           break;
         case FORCE_SIDE_LINK:
           if (goes_forward(arg.mu)) qudaLaunchKernel(sideLinkKernel<1,Arg>, tp, stream, arg);
@@ -769,7 +752,7 @@ namespace quda {
         case FORCE_LEPAGE_MIDDLE_LINK:
           return 2*arg.threads*(2 * 198 +
                                 (!arg.q_prev && goes_forward(arg.sig) ? 198 : 0) +
-                                (arg.q_prev && (arg.q_mu || goes_forward(arg.sig) ) ? 198 : 0) +
+                                (arg.q_prev && (arg.p_mu_q_mu /* was q_mu */ || goes_forward(arg.sig) ) ? 198 : 0) +
                                 ((arg.q_prev && goes_forward(arg.sig) ) ?  198 : 0) +
                                 ( goes_forward(arg.sig) ? 216 : 0) );
         case FORCE_SIDE_LINK:       return 2*arg.threads*2*234;
@@ -789,9 +772,8 @@ namespace quda {
         case FORCE_MIDDLE_LINK:
         case FORCE_LEPAGE_MIDDLE_LINK:
           return 2*arg.threads*( ( goes_forward(arg.sig) ? 2*arg.outA.Bytes() : 0 ) +
-                                 (arg.p_mu ? arg.pMu.Bytes() : 0) +
-                                 (arg.q_mu ? arg.qMu.Bytes() : 0) +
-                                 ( ( goes_forward(arg.sig) || arg.q_mu ) ? arg.qPrev.Bytes() : 0) +
+                                 (arg.p_mu_q_mu ? (arg.pMu.Bytes() + arg.qMu.Bytes()) : 0) +
+                                 ( ( goes_forward(arg.sig) || arg.p_mu_q_mu /* was q_mu */ ) ? arg.qPrev.Bytes() : 0) +
                                  arg.p3.Bytes() + 3*arg.link.Bytes() + arg.oProd.Bytes() );
         case FORCE_SIDE_LINK:
           return 2*arg.threads*( 2*arg.outA.Bytes() + 2*arg.outB.Bytes() +
