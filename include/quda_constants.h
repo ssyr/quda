@@ -21,7 +21,7 @@
  * @brief Maximum geometry supported by a field.  This essentially is
  * the maximum number of dimensions supported per lattice site.
  */
-#define QUDA_MAX_GEOMETRY 8
+#define QUDA_MAX_GEOMETRY 16
 
 /**
  * @def QUDA_MAX_MULTI_SHIFT
