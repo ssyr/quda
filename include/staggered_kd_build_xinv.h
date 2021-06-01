@@ -20,7 +20,7 @@ namespace quda
      @param[in] in precision of Xinv field
      @return constructed Xinv, which needs to be deleted manually
   */
-  cudaGaugeField *AllocateAndBuildStaggeredKahlerDiracInverse(const cudaGaugeField &gauge, const double mass,
+  GaugeField *AllocateAndBuildStaggeredKahlerDiracInverse(const cudaGaugeField &gauge, const double mass,
                                                               const QudaPrecision override_prec);
 
   // Note: see routine

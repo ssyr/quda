@@ -246,7 +246,7 @@ namespace quda {
     ColorSpinorField *tmp2_coarse;
 
     /** Kahler-Dirac Xinv */
-    cudaGaugeField *xInvKD;
+    GaugeField *xInvKD;
 
     /** The fine operator used for computing inter-grid residuals */
     const Dirac *diracResidual;
