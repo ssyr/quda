@@ -14,6 +14,13 @@ namespace quda
   void BuildStaggeredKahlerDiracInverse(GaugeField &Xinv, const cudaGaugeField &gauge, const double mass);
 
   /**
+     @brief Perform the reordering of the Kahler-Dirac inverse block from a coarse scalar field to a KD geometry gauge field
+     @param[out] out Kahler-Dirac inverse in KD geometry gauge field
+     @param[in] in Kahler-Dirac inverse in coarse geometry MILC layout
+  */
+  void ReorderStaggeredKahlerDiracInverse(GaugeField &xInvFineLayout, const GaugeField &xInvCoarseLayout);
+
+  /**
      @brief Allocate and build the Kahler-Dirac inverse block for KD operators
      @param[in] in gauge original fine gauge field
      @param[in] in mass the mass of the original staggered operator w/out factor of 2 convention

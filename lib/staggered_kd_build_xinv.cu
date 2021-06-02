@@ -11,242 +11,6 @@
 
 namespace quda {
 
-  template <typename Float, int fineColor, int coarseSpin, int coarseColor, typename Arg>
-  class CalculateStaggeredGeometryReorder : public TunableVectorYZ {
-
-    Arg &arg;
-    const GaugeField &xInvCoarse;
-    GaugeField &meta;
-
-    long long flops() const { 
-      // just a permutation
-      return 0l;
-    }
-
-    long long bytes() const
-    {
-      // 1. Loading xInvCoarse, the coarse KD inverse field
-      // 2. Storing meta, the reordered, fine KD inverse field
-      return xInvCoarse.Bytes() + meta.Bytes();
-    }
-
-    unsigned int minThreads() const { return arg.fineVolumeCB; }
-    bool tuneSharedBytes() const { return false; } // FIXME don't tune the grid dimension
-    bool tuneGridDim() const { return false; } // FIXME don't tune the grid dimension
-    bool tuneAuxDim() const { return false; }
-
-  public:
-    CalculateStaggeredGeometryReorder(Arg &arg, GaugeField &meta, const GaugeField &xInvCoarse) :
-      TunableVectorYZ(QUDA_KDINVERSE_GEOMETRY, 2),
-      arg(arg),
-      meta(meta),
-      xInvCoarse(xInvCoarse)
-    {
-#ifdef JITIFY
-      create_jitify_program("kernels/staggered_kd_geometry_reorder_xinv_kernel.cuh");
-#endif
-      strcpy(aux, compile_type_str(meta));
-      strcpy(aux, meta.AuxString());
-      if (meta.Location() == QUDA_CPU_FIELD_LOCATION) strcat(aux, getOmpThreadStr());
-      strcat(aux,",computeStaggeredKDBlock");
-      strcat(aux, (meta.Location()==QUDA_CUDA_FIELD_LOCATION && xInvCoarse.MemType() == QUDA_MEMORY_MAPPED) ? ",GPU-mapped," :
-             meta.Location()==QUDA_CUDA_FIELD_LOCATION ? ",GPU-device," : ",CPU,");
-      strcat(aux,"coarse_vol=");
-      strcat(aux,xInvCoarse.VolString());
-    }
-
-    void apply(const qudaStream_t &stream)
-    {
-      (void)stream;
-      /*TuneParam tp = tuneLaunch(*this, getTuning(), QUDA_VERBOSE);
-
-      if (meta.Location() == QUDA_CPU_FIELD_LOCATION) {
-        ComputeStaggeredGeometryReorderCPU(arg);
-      } else {
-#ifdef JITIFY
-        using namespace jitify::reflection;
-        jitify_error = program->kernel("quda::ComputeStaggeredGeometryReorderGPU")
-          .instantiate(Type<Arg>())
-          .configure(tp.grid,tp.block,tp.shared_bytes,stream).launch(arg);
-#else // not jitify
-        qudaLaunchKernel(ComputeStaggeredGeometryReorderGPU<Arg>, tp, stream, arg);
-#endif // JITIFY
-      }*/
-    }
-
-    bool advanceTuneParam(TuneParam &param) const {
-      // only do autotuning if we have device fields
-      if (meta.MemType() == QUDA_MEMORY_DEVICE) return Tunable::advanceTuneParam(param);
-      else return false;
-    }
-
-    TuneKey tuneKey() const { return TuneKey(meta.VolString(), typeid(*this).name(), aux); }
-  };
-
-  /**
-     @brief Reorder the staggered Kahler-Dirac inverse from a coarse scalar layout to a fine KD geometry
-
-     @param X[out] KD block (coarse clover field) accessor
-     @param G[in] Fine grid link / gauge field accessor
-     @param X_[out] KD block (coarse clover field)
-     @param G_[in] Fine gauge field
-     @param mass[in] mass
-   */
-  template<typename Float, int fineColor, int coarseSpin, int coarseColor, typename fineXinv, typename coarseXinv>
-  void calculateStaggeredGeometryReorder(fineXinv &xInvFine, coarseXinv &xInvCoarse, GaugeField &xInvFine_, const GaugeField &xInvCoarse_)
-  {
-    // sanity checks
-    if (fineColor != 3)
-      errorQuda("Input gauge field should have nColor=3, not nColor=%d\n", fineColor);
-
-    if (xInvFine.Ndim() != 4) errorQuda("Number of dimensions not supported");
-    const int nDim = 4;
-
-    if (fineColor * 16 != coarseColor*coarseSpin)
-      errorQuda("Fine nColor=%d is not consistent with KD dof %d", fineColor, coarseColor*coarseSpin);
-
-    int x_size[QUDA_MAX_DIM] = { };
-    int xc_size[QUDA_MAX_DIM] = { };
-    for (int i = 0; i < nDim; i++) {
-      x_size[i] = xInvFine_.X()[i];
-      xc_size[i] = xInvCoarse_.X()[i];
-      // check that local volumes are consistent
-      if (2 * xc_size[i] != x_size[i]) {
-        errorQuda("Inconsistent fine dimension %d and coarse KD dimension %d", x_size[i], xc_size[i]);
-      }
-    }
-    x_size[4] = xc_size[4] = 1;
-
-    // Calculate X (KD block), which is really just a permutation of the gauge fields w/in a KD block
-    //using Arg = CalculateStaggeredGeometryReorderArg<Float,coarseSpin,fineColor,coarseColor,fineXinv,coarseXinv>;
-    //Arg arg(xInvFine, xInvCoarse, x_size, xc_size);
-    //calculateStaggeredGeometryReorder<Float, fineColor, coarseSpin, coarseColor, Arg> y(arg, xInvFine_, xInvCoarse_);
-
-    QudaFieldLocation location = checkLocation(xInvFine_, xInvCoarse_);
-    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Calculating the KD block on the %s\n", location == QUDA_CUDA_FIELD_LOCATION ? "GPU" : "CPU");
-
-    // We know exactly what the scale should be: the max of the input inverse clover
-    double max_scale = xInvCoarse_.abs_max();
-    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Global xInv_max = %e\n", max_scale);
-
-    if (fineXinv::fixedPoint()) {
-      //arg.xInvFine.resetScale(max_scale);
-      xInvFine_.Scale(max_scale);
-    }
-
-    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Permuting inverse Kahler-Dirac block\n");
-    //y.apply(0);
-
-    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("XInvFine2 = %e\n", xInvFine_.norm2(0));
-  }
-
-  template <typename Float, typename vFloat, typename coarseFloat, int fineColor, int coarseColor, int coarseSpin>
-  void calculateStaggeredGeometryReorder(GaugeField &xInvFineLayout, const GaugeField &xInvCoarseLayout)
-  {
-
-    QudaFieldLocation location = checkLocation(xInvFineLayout, xInvCoarseLayout);
-
-    if (location == QUDA_CPU_FIELD_LOCATION) {
-
-      constexpr QudaGaugeFieldOrder xOrder = QUDA_QDP_GAUGE_ORDER;
-
-      if (xInvFineLayout.FieldOrder() != xOrder) errorQuda("Unsupported field order %d\n", xInvFineLayout.FieldOrder());
-      if (xInvCoarseLayout.FieldOrder() != xOrder) errorQuda("Unsupported field order %d\n", xInvCoarseLayout.FieldOrder());
-
-      using xInvFine = typename gauge::FieldOrder<Float,fineColor,1,xOrder,true,vFloat>;
-      using xInvCoarse = typename gauge::FieldOrder<Float,coarseColor*coarseSpin,coarseSpin,xOrder>;
-
-      xInvFine xInvFineAccessor(const_cast<GaugeField&>(xInvFineLayout));
-      xInvCoarse xInvCoarseAccessor(const_cast<GaugeField&>(xInvCoarseLayout));
-
-      calculateStaggeredGeometryReorder<Float,fineColor,coarseSpin,coarseColor>(xInvFineAccessor, xInvCoarseAccessor, xInvFineLayout, xInvCoarseLayout);
-
-    } else {
-
-      constexpr QudaGaugeFieldOrder xFineOrder = QUDA_FLOAT2_GAUGE_ORDER;
-      constexpr QudaGaugeFieldOrder xCoarseOrder = QUDA_QDP_GAUGE_ORDER; // "supposed" to not match xInvCoarseLayout, but for a scalar field it doesn't matter
-
-      if (xInvFineLayout.FieldOrder() != xFineOrder) errorQuda("Unsupported field order %d\n", xInvFineLayout.FieldOrder());
-      if (xInvCoarseLayout.FieldOrder() != QUDA_MILC_GAUGE_ORDER) errorQuda("Unsupported field order %d\n", xInvCoarseLayout.FieldOrder());
-
-      using xInvFine = typename gauge::FieldOrder<Float,fineColor,1,xFineOrder,true,vFloat>;
-      using xInvCoarse = typename gauge::FieldOrder<Float,coarseColor*coarseSpin,coarseSpin,xCoarseOrder>;
-
-      xInvFine xInvFineAccessor(const_cast<GaugeField&>(xInvFineLayout));
-      xInvCoarse xInvCoarseAccessor(const_cast<GaugeField&>(xInvCoarseLayout));
-
-      calculateStaggeredGeometryReorder<Float,fineColor,coarseSpin,coarseColor>(xInvFineAccessor, xInvCoarseAccessor, xInvFineLayout, xInvCoarseLayout);
-    }
-
-  }
-
-  // template on the number of KD (coarse) degrees of freedom
-  template <typename Float, typename vFloat, typename coarseFloat, int fineColor>
-  void calculateStaggeredGeometryReorder(GaugeField &xInvFineLayout, const GaugeField &xInvCoarseLayout)
-  {
-    constexpr int coarseSpin = 2;
-    const int coarseColor = xInvCoarseLayout.Ncolor() / coarseSpin;
-
-    if (coarseColor == 24) { // half the dof w/in a KD-block
-      calculateStaggeredGeometryReorder<Float,vFloat,coarseFloat,fineColor,24,coarseSpin>(xInvFineLayout, xInvCoarseLayout);
-    } else {
-      errorQuda("Unsupported number of Kahler-Dirac dof %d\n", xInvCoarseLayout.Ncolor());
-    }
-  }
-
-  // template on "fine" colors
-  template <typename Float, typename vFloat, typename coarseFloat>
-  void calculateStaggeredGeometryReorder(GaugeField &xInvFineLayout, const GaugeField &xInvCoarseLayout)
-  {
-    if (xInvFineLayout.Ncolor() == 3) {
-      calculateStaggeredGeometryReorder<Float,vFloat,coarseFloat,3>(xInvFineLayout, xInvCoarseLayout);
-    } else {
-      errorQuda("Unsupported number of colors %d\n", xInvFineLayout.Ncolor());
-    }
-  }
-
-  // "template" on coarse precision ; has to be single
-  template <typename Float, typename vFloat>
-  void calculateStaggeredGeometryReorder(GaugeField &xInvFineLayout, const GaugeField &xInvCoarseLayout)
-  {
-#if QUDA_PRECISION & 4
-    if (xInvCoarseLayout.Precision() == QUDA_SINGLE_PRECISION) {
-      calculateStaggeredGeometryReorder<Float, vFloat, float>(xInvFineLayout, xInvCoarseLayout);
-    } else
-#endif
-    {
-      errorQuda("Unsupported precision %d", xInvCoarseLayout.Precision());
-    }
-
-  }
-
-  // Reorders Xinv from coarse scalar geometry to fine KD geometry; template on fine precision
-  void calculateStaggeredGeometryReorder(GaugeField &xInvFineLayout, const GaugeField &xInvCoarseLayout)
-  {
-#if defined(GPU_STAGGERED_DIRAC)
-
-    if (xInvFineLayout.Geometry() != QUDA_KDINVERSE_GEOMETRY)
-      errorQuda("Unsupported geometry %d", xInvFineLayout.Geometry());
-
-#if QUDA_PRECISION & 4
-    if (xInvFineLayout.Precision() == QUDA_SINGLE_PRECISION) {
-      calculateStaggeredGeometryReorder<float,float>(xInvFineLayout, xInvCoarseLayout);
-    } else
-#endif
-#if QUDA_PRECISION & 2
-    if (xInvFineLayout.Precision() == QUDA_HALF_PRECISION) {
-      calculateStaggeredGeometryReorder<float, short>(xInvFineLayout, xInvCoarseLayout);
-    } else
-#endif
-    {
-      errorQuda("Unsupported precision %d", xInvFineLayout.Precision());
-    }
-
-#else
-    errorQuda("Staggered fermion support has not been built");
-#endif
-  }
-
 
   template <typename Float, int fineColor, int coarseSpin, int coarseColor, typename Arg>
   class CalculateStaggeredKDBlock : public TunableVectorYZ {
@@ -507,13 +271,13 @@ namespace quda {
       gParam.pad = 0;
 
       if (location == QUDA_CUDA_FIELD_LOCATION)
-        xInvMilcOrder = std::make_unique<cudaGaugeField>(new cudaGaugeField(gParam));
+        xInvMilcOrder = std::make_unique<cudaGaugeField>(gParam);
       else if (location == QUDA_CPU_FIELD_LOCATION)
-        xInvMilcOrder = std::make_unique<cpuGaugeField>(new cpuGaugeField(gParam));
+        xInvMilcOrder = std::make_unique<cpuGaugeField>(gParam);
       else
         errorQuda("Invalid field location %d", location);
-    }
 
+    }
 
     // Step 2: build a host or device gauge field as appropriate, but
     // in any case change to reconstruct 18 so we can use fine-grained
@@ -543,7 +307,7 @@ namespace quda {
         gf_param.nFace = 1;
         gf_param.ghostExchange = QUDA_GHOST_EXCHANGE_PAD;
 
-        tmp_U = std::make_unique<cpuGaugeField>(new cpuGaugeField(gf_param));
+        tmp_U = std::make_unique<cpuGaugeField>(gf_param);
 
         //Copy the cuda gauge field to the cpu
         gauge.saveCPUField(reinterpret_cast<cpuGaugeField&>(*tmp_U));
@@ -555,7 +319,7 @@ namespace quda {
         gf_param.reconstruct = QUDA_RECONSTRUCT_NO;
         gf_param.order = QUDA_FLOAT2_GAUGE_ORDER; // guaranteed for no recon
         gf_param.setPrecision( QUDA_SINGLE_PRECISION );
-        tmp_U = std::make_unique<cudaGaugeField>(new cudaGaugeField(gf_param));
+        tmp_U = std::make_unique<cudaGaugeField>(gf_param);
 
         tmp_U->copy(gauge);
       }
@@ -565,13 +329,13 @@ namespace quda {
 
     // Step 3: Create the X field based on Xinv, but switch to a native ordering for a GPU setup.
     std::unique_ptr<GaugeField> X(nullptr);
-    GaugeFieldParam x_param(xInvMilcOrder.get());
+    GaugeFieldParam x_param(*xInvMilcOrder);
     if (location == QUDA_CUDA_FIELD_LOCATION) {
       x_param.order = QUDA_FLOAT2_GAUGE_ORDER;
       x_param.setPrecision(x_param.Precision());
-      X = std::make_unique<cudaGaugeField>(new cudaGaugeField(x_param));
+      X = std::make_unique<cudaGaugeField>(x_param);
     } else {
-      X = std::make_unique<cpuGaugeField>(new cpuGaugeField(x_param));
+      X = std::make_unique<cpuGaugeField>(x_param);
     }
 
     // Step 4: Calculate X from U
@@ -583,7 +347,7 @@ namespace quda {
     if (location == QUDA_CUDA_FIELD_LOCATION) {
       // FIXME: add support for double precision inverse
       // Reorder to MILC order for inversion, based on "coarse_op_preconditioned.cu"
-      GaugeFieldParam param(xInvMilcOrder.get());
+      GaugeFieldParam param(*xInvMilcOrder);
       param.order = QUDA_MILC_GAUGE_ORDER; // MILC order == QDP order for Xinv
       param.setPrecision(QUDA_SINGLE_PRECISION);
       cudaGaugeField X_(param);
@@ -600,7 +364,7 @@ namespace quda {
     if (getVerbosity() >= QUDA_VERBOSE) printfQuda("xInvMilcOrder = %e\n", xInvMilcOrder->norm2(0));
 
     // Step 6: reorder the KD inverse into a "gauge field" with a QUDA_KDINVERSE_GEOMETRY
-    calculateStaggeredGeometryReorder(Xinv, *xInvMilcOrder.get());
+    ReorderStaggeredKahlerDiracInverse(Xinv, *xInvMilcOrder);
 
   }
 
@@ -608,7 +372,6 @@ namespace quda {
   // Allocates and calculates the inverse KD block, returning Xinv
   GaugeField* AllocateAndBuildStaggeredKahlerDiracInverse(const cudaGaugeField &gauge, const double mass, const QudaPrecision override_prec)
   {
-
     GaugeFieldParam gParam(gauge);
     gParam.reconstruct = QUDA_RECONSTRUCT_NO;
     gParam.create = QUDA_NULL_FIELD_CREATE;
