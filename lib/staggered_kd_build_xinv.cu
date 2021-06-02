@@ -522,7 +522,9 @@ namespace quda {
     if (location == QUDA_CUDA_FIELD_LOCATION && gauge.Reconstruct() == QUDA_RECONSTRUCT_NO && gauge.Precision() == QUDA_SINGLE_PRECISION)
       need_new_U = false;
 
-    GaugeField* U = nullptr;
+    std::unique_ptr<GaugeField> tmp_U(nullptr);
+
+    //GaugeField* U = nullptr;
 
     if (need_new_U) {
       if (location == QUDA_CPU_FIELD_LOCATION) {
@@ -541,10 +543,10 @@ namespace quda {
         gf_param.nFace = 1;
         gf_param.ghostExchange = QUDA_GHOST_EXCHANGE_PAD;
 
-        U = new cpuGaugeField(gf_param);
+        tmp_U = std::make_unique<cpuGaugeField>(new cpuGaugeField(gf_param));
 
         //Copy the cuda gauge field to the cpu
-        gauge.saveCPUField(*static_cast<cpuGaugeField*>(U));
+        gauge.saveCPUField(reinterpret_cast<cpuGaugeField&>(*tmp_U));
 
       } else if (location == QUDA_CUDA_FIELD_LOCATION) {
 
@@ -553,13 +555,13 @@ namespace quda {
         gf_param.reconstruct = QUDA_RECONSTRUCT_NO;
         gf_param.order = QUDA_FLOAT2_GAUGE_ORDER; // guaranteed for no recon
         gf_param.setPrecision( QUDA_SINGLE_PRECISION );
-        U = new cudaGaugeField(gf_param);
+        tmp_U = std::make_unique<cudaGaugeField>(new cudaGaugeField(gf_param));
 
-        U->copy(gauge);
+        tmp_U->copy(gauge);
       }
-    } else {
-      U = const_cast<cudaGaugeField*>(&gauge);
     }
+
+    const GaugeField& U = need_new_U ? *tmp_U : reinterpret_cast<const GaugeField&>(gauge);
 
     // Step 3: Create the X field based on Xinv, but switch to a native ordering for a GPU setup.
     std::unique_ptr<GaugeField> X(nullptr);
@@ -573,7 +575,7 @@ namespace quda {
     }
 
     // Step 4: Calculate X from U
-    calculateStaggeredKDBlock(*X, *U, mass);
+    calculateStaggeredKDBlock(*X, U, mass);
 
     // Step 5: Invert X to get the KD inverse block
     // Logic copied from `coarse_op_preconditioned.cu`
@@ -599,9 +601,6 @@ namespace quda {
 
     // Step 6: reorder the KD inverse into a "gauge field" with a QUDA_KDINVERSE_GEOMETRY
     calculateStaggeredGeometryReorder(Xinv, *xInvMilcOrder.get());
-
-    if (need_new_U)
-      delete U;
 
   }
 
