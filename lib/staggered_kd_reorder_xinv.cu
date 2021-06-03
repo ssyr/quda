@@ -36,7 +36,7 @@ template <typename Float, int fineColor, int coarseSpin, int coarseColor, typena
 
   public:
     CalculateStaggeredGeometryReorder(Arg &arg, GaugeField &meta, const GaugeField &xInvCoarse) :
-      TunableVectorYZ(QUDA_KDINVERSE_GEOMETRY, 2),
+      TunableVectorYZ(Arg::kdBlockSize, 2),
       arg(arg),
       meta(meta),
       xInvCoarse(xInvCoarse)

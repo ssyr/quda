@@ -12,8 +12,13 @@
 namespace quda {
 
 
-  template <typename Float, int fineColor, int coarseSpin, int coarseColor, typename Arg>
+  template <typename Arg>
   class CalculateStaggeredKDBlock : public TunableVectorYZ {
+
+    using Float = typename Arg::Float;
+    static constexpr int fineColor = Arg::fineColor;
+    static constexpr int coarseSpin = Arg::coarseSpin;
+    static constexpr int coarseColor = Arg::coarseColor;
 
     Arg &arg;
     const GaugeField &meta;
@@ -122,7 +127,7 @@ namespace quda {
     // Calculate X (KD block), which is really just a permutation of the gauge fields w/in a KD block
     using Arg = CalculateStaggeredKDBlockArg<Float,coarseSpin,fineColor,coarseColor,xGauge,fineGauge>;
     Arg arg(X, G, mass, x_size, xc_size);
-    CalculateStaggeredKDBlock<Float, fineColor, coarseSpin, coarseColor, Arg> y(arg, G_, X_);
+    CalculateStaggeredKDBlock<Arg> y(arg, G_, X_);
 
     QudaFieldLocation location = checkLocation(X_, G_);
     if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Calculating the KD block on the %s\n", location == QUDA_CUDA_FIELD_LOCATION ? "GPU" : "CPU");
@@ -375,15 +380,14 @@ namespace quda {
     GaugeFieldParam gParam(gauge);
     gParam.reconstruct = QUDA_RECONSTRUCT_NO;
     gParam.create = QUDA_NULL_FIELD_CREATE;
-
-    // the precision of KD inverse can be lower than the input gauge fields
-    gParam.setPrecision( override_prec );
-
     gParam.geometry = QUDA_KDINVERSE_GEOMETRY;
     gParam.siteSubset = QUDA_FULL_SITE_SUBSET;
     gParam.ghostExchange = QUDA_GHOST_EXCHANGE_NO;
     gParam.nFace = 0;
     gParam.pad = 0;
+
+    // the precision of KD inverse can be lower than the input gauge fields
+    gParam.setPrecision( override_prec );
 
     GaugeField* Xinv = new cudaGaugeField(gParam);
 

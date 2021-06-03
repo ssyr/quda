@@ -19,7 +19,8 @@ namespace quda {
 
     long long flops() const { 
       // a coarse volume number of 48x48 mat-vec
-      return 2ll * arg.coarseVolumeCB * Arg::coarseDof * (8ll * Arg::coarseDof - 2);
+      // FIXME
+      return 0ll; // 2ll * arg.coarseVolumeCB * Arg::coarseDof * (8ll * Arg::coarseDof - 2);
     }
 
     long long bytes() const
@@ -27,26 +28,12 @@ namespace quda {
       return 2 * meta.Bytes() + Xinv.Bytes();
     }
 
-    unsigned int sharedBytesPerThread() const {
-      // 16 threads needs to store 16 ColorVectors in the compute
-      // precision, times 2 for in vs out
-      // -> each thread needs to store 2 x size of ColorVector
-      // plus some padding to avoid bank conflicts: each KD block stores
-      // 17 ColorVectors. (2 * 16 threads * 51 complex * 8 bytes per complex) / 256 threads
-      // -> each thread needs 51 bytes
-      return 2 * Arg::fineColor * 16 * Arg::paddedSpinorSizeKD * sizeof(complex<typename Arg::Float>) / 256 +
-              Arg::xinvPaddedColTileSize * sizeof(complex<typename Arg::Float>);
-    }
-
-    int blockStep() const { return 256; }
-    int blockMin() const { return 256; }
-
-    unsigned int minThreads() const { return 2 * arg.fineVolumeCB; }
+    unsigned int minThreads() const { return arg.volumeCB; }
     bool tuneGridDim() const { return false; } // don't tune the grid dimension
 
   public:
     ApplyStaggeredKDBlock(Arg &arg, const ColorSpinorField &meta, const GaugeField &Xinv) :
-      TunableVectorY(1),
+      TunableVectorY(2),
       arg(arg),
       meta(meta),
       Xinv(Xinv)
@@ -58,7 +45,7 @@ namespace quda {
       strcat(aux, "out:");
       strcat(aux, meta.AuxString());
       strcat(aux, ",applyStaggeredKDBlock");
-      strcat(aux, ",Xinv:coarse_");
+      strcat(aux, ",Xinv:");
       strcat(aux, Xinv.AuxString());
       // should be all we need?
     }
@@ -68,15 +55,15 @@ namespace quda {
       TuneParam tp = tuneLaunch(*this, getTuning(), QUDA_VERBOSE);
 
       if (meta.Location() == QUDA_CPU_FIELD_LOCATION) {
-        //ComputeStaggeredKDBlockCPU<Float,fineColor,coarseSpin,coarseColor>(arg);
+        ComputeApplyKDBlockCPU(arg);
       } else {
 #ifdef JITIFY
         using namespace jitify::reflection;
-        jitify_error = program->kernel("quda::ApplyStaggeredKDBlockGPU")
+        jitify_error = program->kernel("quda::ComputeApplyKDBlockGPU")
           .instantiate(Type<Arg>())
           .configure(tp.grid,tp.block,tp.shared_bytes,stream).launch(arg);
 #else // not jitify
-        qudaLaunchKernel(ApplyStaggeredKDBlockGPU<Arg>, tp, stream, arg);
+        qudaLaunchKernel(ComputeApplyKDBlockGPU<Arg>, tp, stream, arg);
 #endif // JITIFY
       }
     }
@@ -94,35 +81,19 @@ namespace quda {
      @param in_[in] input staggered spinor
      @param Xinv_[in] KD block inverse
   */
-  template<typename vFloatSpinor, typename vFloatGauge, int fineColor, int coarseDof, bool dagger, typename fineColorSpinor, typename xInvGauge>
-  void applyStaggeredKDBlock(fineColorSpinor &out, const fineColorSpinor &in, const xInvGauge &Xinv,
-        ColorSpinorField &out_, const ColorSpinorField &in_, const GaugeField &Xinv_)
+  template<typename vFloatSpinor, typename vFloatGauge, int nColor, bool dagger>
+  void applyStaggeredKDBlock(ColorSpinorField &out, const ColorSpinorField &in, const GaugeField &Xinv)
   {
     // sanity checks
-    if (fineColor != 3)
-      errorQuda("Input gauge field should have nColor=3, not nColor=%d\n", fineColor);
+    if (nColor != 3)
+      errorQuda("Input gauge field should have nColor=3, not nColor=%d\n", nColor);
 
     if (Xinv.Ndim() != 4) errorQuda("Number of dimensions not supported");
-    const int nDim = 4;
-
-    if (fineColor * 16 != coarseDof)
-      errorQuda("Fine nColor=%d is not consistent with KD dof %d", fineColor, coarseDof);
-
-    int x_size[QUDA_MAX_DIM] = { };
-    int xc_size[QUDA_MAX_DIM] = { };
-    for (int i = 0; i < nDim; i++) {
-      x_size[i] = out_.X()[i];
-      xc_size[i] = Xinv_.X()[i];
-      // check that local volumes are consistent
-      if (2 * xc_size[i] != x_size[i]) {
-        errorQuda("Inconsistent fine dimension %d and coarse KD dimension %d", x_size[i], xc_size[i]);
-      }
-    }
     
-    using Arg = ApplyStaggeredKDBlockArg<vFloatSpinor,vFloatGauge,coarseDof,fineColor,dagger,fineColorSpinor,xInvGauge>;
-    Arg arg(out, in, Xinv, x_size, xc_size);
+    using Arg = ApplyStaggeredKDBlockArg<vFloatSpinor,vFloatGauge,nColor,dagger>;
+    Arg arg(out, in, Xinv);
 
-    ApplyStaggeredKDBlock<Arg> y(arg, out_, Xinv_);
+    ApplyStaggeredKDBlock<Arg> y(arg, out, Xinv);
 
     if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Applying KD block...\n");
     y.apply(0);
@@ -130,54 +101,26 @@ namespace quda {
     if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("... done applying KD block\n");
   }
 
-  // create accessors, specify dagger vs non-dagger
-  template <typename vFloatSpinor, typename vFloatGauge, int fineColor, int fineSpin, int coarseDof>
+  // specify dagger vs non-dagger
+  template <typename vFloatSpinor, typename vFloatGauge, int nColor>
   void applyStaggeredKDBlock(ColorSpinorField &out, const ColorSpinorField &in, const GaugeField &Xinv, bool dagger)
   {
-
-    // Create the accessor for Xinv
-    constexpr QudaGaugeFieldOrder xOrder = QUDA_MILC_GAUGE_ORDER;
-    if (Xinv.FieldOrder() != xOrder) errorQuda("Unsupported field order %d\n", Xinv.FieldOrder());
-    using xInvCoarse = typename gauge::FieldOrder<typename mapper<vFloatGauge>::type,coarseDof,1,xOrder,true,vFloatGauge>;
-    xInvCoarse xInvAccessor(const_cast<GaugeField &>(Xinv));
-
-    // Create the accessors for out, in
-    constexpr bool spin_project = false;
-    constexpr bool spinor_direct_load = false; // seems legacy? false means texture load
-    using csFine = typename colorspinor_mapper<vFloatSpinor, fineSpin, fineColor, spin_project, spinor_direct_load>::type;
-    const csFine inAccessor(in);
-    csFine outAccessor(out);
-
-    if (dagger) applyStaggeredKDBlock<vFloatSpinor, vFloatGauge, fineColor, coarseDof, true>(outAccessor, inAccessor, xInvAccessor, out, in, Xinv);
-    else applyStaggeredKDBlock<vFloatSpinor, vFloatGauge, fineColor, coarseDof, false>(outAccessor, inAccessor, xInvAccessor, out, in, Xinv);
-  }
-
-  // template on coarse color, spin
-  template <typename vFloatSpinor, typename vFloatGauge, int fineColor, int fineSpin>
-  void applyStaggeredKDBlock(ColorSpinorField &out, const ColorSpinorField &in, const GaugeField &Xinv, bool dagger)
-  {
-    //constexpr int coarseSpin = 2;
-    const int coarseDof = Xinv.Ncolor(); // / coarseSpin;
-
-    if (coarseDof == 48) { // dof w/in a KD block
-      applyStaggeredKDBlock<vFloatSpinor, vFloatGauge, fineColor, fineSpin, 48>(out, in, Xinv, dagger);
-    } else {
-      errorQuda("Unsupported number of Kahler-Dirac dof %d\n", Xinv.Ncolor());
-    }
+    if (dagger) applyStaggeredKDBlock<vFloatSpinor, vFloatGauge, nColor, true>(out, in, Xinv);
+    else applyStaggeredKDBlock<vFloatSpinor, vFloatGauge, nColor, false>(out, in, Xinv);
   }
 
   // template on fine colors, spin
   template <typename vFloatSpinor, typename vFloatGauge>
   void applyStaggeredKDBlock(ColorSpinorField &out, const ColorSpinorField &in, const GaugeField &Xinv, bool dagger)
   {
-    if (out.Ncolor() != in.Ncolor()) 
-      errorQuda("Ncolor %d and %d do not match", out.Ncolor(), in.Ncolor());
+    if (out.Ncolor() != in.Ncolor() || out.Ncolor() != Xinv.Ncolor()) 
+      errorQuda("Ncolors %d %d %d do not match", out.Ncolor(), in.Ncolor(), Xinv.Ncolor());
 
     if (out.Nspin() != in.Nspin())
       errorQuda("Nspin %d and %d do not match", out.Nspin(), in.Nspin());
 
     if (out.Ncolor() == 3 && out.Nspin() == 1) {
-      applyStaggeredKDBlock<vFloatSpinor, vFloatGauge, 3, 1>(out, in, Xinv, dagger);
+      applyStaggeredKDBlock<vFloatSpinor, vFloatGauge, 3>(out, in, Xinv, dagger);
     } else {
       errorQuda("Unsupported (color, spin) = (%d, %d)", out.Ncolor(), out.Nspin());
     }
@@ -212,19 +155,26 @@ namespace quda {
 #if defined(GPU_STAGGERED_DIRAC)
     auto location = checkLocation(out, in, Xinv);
 
-    if (location == QUDA_CPU_FIELD_LOCATION)
-      errorQuda("There is no support for applying the KD operator to CPU fields (yet)");
+    if (Xinv.Geometry() != QUDA_KDINVERSE_GEOMETRY)
+      errorQuda("Unsupported gauge geometry %d , expected %d for Xinv", Xinv.Geometry(), QUDA_KDINVERSE_GEOMETRY);
 
     // the staggered KD block inverse can only be applied to a full field
-    if (out.SiteSubset() != QUDA_FULL_SITE_SUBSET || out.SiteSubset() != QUDA_FULL_SITE_SUBSET)
+    if (out.SiteSubset() != QUDA_FULL_SITE_SUBSET || in.SiteSubset() != QUDA_FULL_SITE_SUBSET)
       errorQuda("There is no meaning to applying the KD inverse to a single parity field");
     
     checkPrecision(out, in);
 
-    // Instantiate based on ColorSpinor precision
-    // We don't have a constraint on the precision of Xinv matching
-    // the precision of the spinors.
-    instantiatePrecision<StaggeredKDBlockApply>(out, in, Xinv, dagger);
+    // Not using instantiate for now, since we support
+    // KD precision < spinor precision. Need to figure out
+    // a better way to handle this
+#if QUDA_PRECISION & 4
+      if (out.Precision() == QUDA_SINGLE_PRECISION) {
+        applyStaggeredKDBlock<float, float>(out, in, Xinv, dagger);
+      } else
+#endif
+      {
+        errorQuda("Unsupported precision %d", Xinv.Precision());
+      }
 
 #else
     errorQuda("Staggered fermion support has not been built");
