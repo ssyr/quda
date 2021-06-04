@@ -121,7 +121,7 @@ template <typename Float, int fineColor, int coarseSpin, int coarseColor, typena
     CalculateStaggeredGeometryReorder<Float, fineColor, coarseSpin, coarseColor, Arg> y(arg, xInvFine_, xInvCoarse_);
 
     QudaFieldLocation location = checkLocation(xInvFine_, xInvCoarse_);
-    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Calculating the KD block on the %s\n", location == QUDA_CUDA_FIELD_LOCATION ? "GPU" : "CPU");
+    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Permuting KD block on the %s\n", location == QUDA_CUDA_FIELD_LOCATION ? "GPU" : "CPU");
 
     // We know exactly what the scale should be: the max of the input inverse clover
     double max_scale = xInvCoarse_.abs_max();
@@ -132,10 +132,9 @@ template <typename Float, int fineColor, int coarseSpin, int coarseColor, typena
       xInvFine_.Scale(max_scale);
     }
 
-    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Permuting inverse Kahler-Dirac block\n");
     y.apply(0);
 
-    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("XInvFine2 = %e\n", xInvFine_.norm2(0));
+    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("XInvFine2 = %e\n", xInvFine_.norm2());
   }
 
   template <typename Float, typename vFloat, typename coarseFloat, int fineColor, int coarseColor, int coarseSpin>

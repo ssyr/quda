@@ -60,11 +60,13 @@ namespace quda {
     getCoords(coord, x_cb, arg.x_size, parity);
 
     // Compute coarse coordinates
+#pragma unroll
     for (int d = 0; d < nDim; d++) coord_coarse[d] = coord[d]/2;
     int coarse_parity = 0;
+#pragma unroll
     for (int d = 0; d < nDim; d++) coarse_parity += coord_coarse[d];
     coarse_parity &= 1;
-    int coarse_x_cb = ((coord_coarse[3]*arg.xc_size[2]+coord_coarse[2])*arg.xc_size[1]+coord_coarse[1])*(arg.xc_size[0]/2) + coord_coarse[0]/2;
+    int coarse_x_cb = (((coord_coarse[3]*arg.xc_size[2]+coord_coarse[2])*arg.xc_size[1]+coord_coarse[1])*arg.xc_size[0] + coord_coarse[0]) >> 1;
 
     // Fine parity gives the coarse spin
     constexpr int s = 0; // fine spin is always 0, since it's staggered.
@@ -88,6 +90,18 @@ namespace quda {
         arg.fineXinv(g_f,parity,x_cb,ic_f,jc_f) = arg.coarseXinv(0,coarse_parity,coarse_x_cb,is_c,js_c,ic_c_base + Arg::kdBlockSizeCB * ic_f,jc_c_base + Arg::kdBlockSizeCB * jc_f);
       }
     }
+
+    // set it to the unit matrix...
+    /*
+#pragma unroll
+    for (int ic_f = 0; ic_f < Arg::fineColor; ic_f++) {
+#pragma unroll
+      for (int jc_f = 0; jc_f < Arg::fineColor; jc_f++) {
+        complex<Float> val = { (ic_f == jc_f && is_c == js_c && ic_c_base == jc_c_base) ? 1.f : 0.f, 0.f };
+        arg.fineXinv(g_f, parity, x_cb, ic_f, jc_f) = val;
+      }
+    }
+    */
 
   }
 

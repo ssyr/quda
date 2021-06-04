@@ -86,6 +86,10 @@ namespace quda {
 
     Vector out;
 
+    // only needed for dagger
+    // global parity == parity w/in the KD block
+    int my_corner = 8*parity+4*(coord[3]%2)+2*(coord[2]%2)+(coord[1]%2);
+
     // Begin accumulating into the output vector
 
     // Even parity
@@ -96,72 +100,72 @@ namespace quda {
       {
         const int offset[4] = { 0, 0, 0, 0 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(0, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(0, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
 
       // { 1, 1, 0, 0 }
       {
         const int offset[4] = { 1, 1, 0, 0 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(1, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(1, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
 
       // { 1, 0, 1, 0 }
       {
         const int offset[4] = { 1, 0, 1, 0 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(2, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(2, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
 
       // { 0, 1, 1, 0 }
       {
         const int offset[4] = { 0, 1, 1, 0 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(3, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(3, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
 
       // { 1, 0, 0, 1 }
       {
         const int offset[4] = { 1, 0, 0, 1 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(4, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(4, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
 
       // { 0, 1, 0, 1 }
       {
         const int offset[4] = { 0, 1, 0, 1 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(5, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(5, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
 
       // { 0, 0, 1, 1 }
       {
         const int offset[4] = { 0, 0, 1, 1 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(6, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(6, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
 
       // { 1, 1, 1, 1 }
       {
         const int offset[4] = { 1, 1, 1, 1 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(7, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(7, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
     }
 
@@ -173,77 +177,77 @@ namespace quda {
       {
         const int offset[4] = { 1, 0, 0, 0 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(8, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(8, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
 
       // { 0, 1, 0, 0 }
       {
         const int offset[4] = { 0, 1, 0, 0 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(9, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(9, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
       
       // { 0, 0, 1, 0 }
       {
         const int offset[4] = { 0, 0, 1, 0 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(10, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(10, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
       
       // { 1, 1, 1, 0 }
       {
         const int offset[4] = { 1, 1, 1, 0 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(11, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(11, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
       
       // { 0, 0, 0, 1 }
       {
         const int offset[4] = { 0, 0, 0, 1 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(12, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(12, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
       
       // { 1, 1, 0, 1 }
       {
         const int offset[4] = { 1, 1, 0, 1 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(13, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(13, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
       
       // { 1, 0, 1, 1 }
       {
         const int offset[4] = { 1, 0, 1, 1 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(14, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(14, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
       
       // { 0, 1, 1, 1 }
       {
         const int offset[4] = { 0, 1, 1, 1 };
         const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
-        const Link Xinv = arg.xInv(15, coord.x_cb, parity);
+        const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, gather_parity) : arg.xInv(15, coord.x_cb, parity);
         const Vector in = arg.in(neighbor_idx, gather_parity);
-        out += (Xinv * in);
+        out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
     }
 
     // And we're done
-    arg.out(x_cb, parity) = out;
+    arg.out(coord.x_cb, parity) = out;
 
   }
 
