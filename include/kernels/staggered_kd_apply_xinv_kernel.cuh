@@ -92,6 +92,28 @@ namespace quda {
 
     // Begin accumulating into the output vector
 
+    int nbr_corner = 0;
+#pragma unroll
+    for (int nbr_parity = 0; nbr_parity < 2; nbr_parity++) {
+#pragma unroll
+      for (int nbr_t = 0; nbr_t < 2; nbr_t++) {
+#pragma unroll
+        for (int nbr_z = 0; nbr_z < 2; nbr_z++) {
+#pragma unroll
+          for (int nbr_y = 0; nbr_y < 2; nbr_y++) {
+            const int offset[4] = { (nbr_parity + nbr_t + nbr_z + nbr_y) & 1, nbr_y, nbr_z, nbr_t };
+            const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
+            const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, nbr_parity) : arg.xInv(nbr_corner, coord.x_cb, parity);
+            const Vector in = arg.in(neighbor_idx, nbr_parity);
+            out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
+            nbr_corner++;
+          }
+        }
+      }
+    }
+
+    // FIXME delete before PR
+    /*
     // Even parity
     {
       const int gather_parity = 0;
@@ -245,6 +267,7 @@ namespace quda {
         out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
       }
     }
+    */
 
     // And we're done
     arg.out(coord.x_cb, parity) = out;
