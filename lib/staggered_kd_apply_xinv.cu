@@ -127,25 +127,24 @@ namespace quda {
   }
 
   // template on Xinv precision (only half and single for now)
-  template <typename vFloatSpinor> struct StaggeredKDBlockApply {
-    StaggeredKDBlockApply(ColorSpinorField &out, const ColorSpinorField &in, const GaugeField &Xinv, bool dagger)
-    {
+  template <typename vFloatSpinor>
+  void applyStaggeredKDBlock(ColorSpinorField &out, const ColorSpinorField &in, const GaugeField &Xinv, bool dagger)
+  {
 
 #if QUDA_PRECISION & 4
-      if (Xinv.Precision() == QUDA_SINGLE_PRECISION) {
-        applyStaggeredKDBlock<vFloatSpinor, float>(out, in, Xinv, dagger);
-      } else
+    if (Xinv.Precision() == QUDA_SINGLE_PRECISION) {
+      applyStaggeredKDBlock<vFloatSpinor, float>(out, in, Xinv, dagger);
+    } else
 #endif
 #if QUDA_PRECISION & 2
-      if (Xinv.Precision() == QUDA_HALF_PRECISION) {
-        applyStaggeredKDBlock<vFloatSpinor, short>(out, in, Xinv, dagger);
-      } else
+    if (Xinv.Precision() == QUDA_HALF_PRECISION) {
+      applyStaggeredKDBlock<vFloatSpinor, short>(out, in, Xinv, dagger);
+    } else
 #endif
-      {
-        errorQuda("Unsupported precision %d", Xinv.Precision());
-      }
+    {
+      errorQuda("Unsupported precision %d", Xinv.Precision());
     }
-  };
+  }
 
 
 
@@ -169,7 +168,7 @@ namespace quda {
     // a better way to handle this
 #if QUDA_PRECISION & 4
       if (out.Precision() == QUDA_SINGLE_PRECISION) {
-        applyStaggeredKDBlock<float, float>(out, in, Xinv, dagger);
+        applyStaggeredKDBlock<float>(out, in, Xinv, dagger);
       } else
 #endif
       {
