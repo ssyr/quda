@@ -26,7 +26,7 @@ void dslashQuda_4dpc(void *h_out, void *h_in, QudaInvertParam *inv_param, QudaPa
   ColorSpinorParam cpuParam(h_in, *inv_param, gauge.X(), true, inv_param->input_location);
   ColorSpinorField *in_h = ColorSpinorField::Create(cpuParam);
 
-  ColorSpinorParam cudaParam(cpuParam, *inv_param);
+  ColorSpinorParam cudaParam(cpuParam, inv_param->cuda_prec);
   cudaColorSpinorField in(*in_h, cudaParam);
 
   if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
@@ -91,7 +91,7 @@ void dslashQuda_mdwf(void *h_out, void *h_in, QudaInvertParam *inv_param, QudaPa
   ColorSpinorParam cpuParam(h_in, *inv_param, gauge.X(), true, inv_param->input_location);
   ColorSpinorField *in_h = ColorSpinorField::Create(cpuParam);
 
-  ColorSpinorParam cudaParam(cpuParam, *inv_param);
+  ColorSpinorParam cudaParam(cpuParam, inv_param->cuda_prec);
   cudaColorSpinorField in(*in_h, cudaParam);
 
   if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
@@ -161,7 +161,7 @@ void dslashQuda_mobius_eofa(void *h_out, void *h_in, QudaInvertParam *inv_param,
   ColorSpinorParam cpuParam(h_in, *inv_param, gaugePrecise->X(), precondition_output, inv_param->input_location);
   ColorSpinorField *in_h = ColorSpinorField::Create(cpuParam);
 
-  ColorSpinorParam cudaParam(cpuParam, *inv_param);
+  ColorSpinorParam cudaParam(cpuParam, inv_param->cuda_prec);
   cudaColorSpinorField in(*in_h, cudaParam);
 
   if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {

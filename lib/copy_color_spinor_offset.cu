@@ -52,6 +52,7 @@ namespace quda
   template <class Float, int nColor> struct CopyColorSpinorOffset {
     CopyColorSpinorOffset(ColorSpinorField &out, const ColorSpinorField &in, CommKey offset, QudaPCType pc_type)
     {
+      checkLocation(out, in); // check all locations match
       if (in.Nspin() == 4) {
         copy_color_spinor_offset<Float, nColor, 4>(out, in, offset, pc_type);
       } else if (in.Nspin() == 1) {
@@ -65,8 +66,23 @@ namespace quda
   void copyFieldOffset(ColorSpinorField &out, const ColorSpinorField &in, CommKey offset, QudaPCType pc_type)
   {
     checkPrecision(out, in);
-    checkLocation(out, in); // check all locations match
-    instantiate<CopyColorSpinorOffset>(out, in, offset, pc_type);
+
+    if (in.Location() == QUDA_CPU_FIELD_LOCATION && out.Location() == QUDA_CUDA_FIELD_LOCATION) {
+      ColorSpinorParam cpuParam(in);
+      ColorSpinorParam cudaParam(cpuParam, out.Precision(), QUDA_CUDA_FIELD_LOCATION);
+      cudaParam.create = QUDA_COPY_FIELD_CREATE;
+      cudaColorSpinorField in_d(in, cudaParam);
+      instantiate<CopyColorSpinorOffset>(out, in_d, offset, pc_type);
+    } else if (in.Location() == QUDA_CUDA_FIELD_LOCATION && out.Location() == QUDA_CPU_FIELD_LOCATION) {
+      ColorSpinorParam cpuParam(out);
+      ColorSpinorParam cudaParam(cpuParam, in.Precision(), QUDA_CUDA_FIELD_LOCATION);
+      cudaParam.create = QUDA_NULL_FIELD_CREATE;
+      cudaColorSpinorField out_d(cudaParam);
+      instantiate<CopyColorSpinorOffset>(out_d, in, offset, pc_type);
+      out = out_d;
+    } else {
+      instantiate<CopyColorSpinorOffset>(out, in, offset, pc_type);
+    }
   }
 
 } // namespace quda
