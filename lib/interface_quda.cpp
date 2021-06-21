@@ -3951,28 +3951,27 @@ void callMultiSrcQuda(void **_hp_x, void **_hp_b, QudaInvertParam *param, // col
 
     auto original_input_location = param->input_location;
     auto original_output_location = param->output_location;
-    auto original_gamma_basis = param->gamma_basis = cuda_cs_param_split.gammaBasis;
+    auto original_gamma_basis = param->gamma_basis;
     auto original_dirac_order = param->dirac_order;
-#if 1
-    param->input_location = QUDA_CUDA_FIELD_LOCATION;
-    param->output_location = QUDA_CUDA_FIELD_LOCATION;
-    param->gamma_basis = cuda_cs_param_split.gammaBasis;
-    param->dirac_order = QUDA_INTERNAL_DIRAC_ORDER;
-#else
-    param->input_location = QUDA_CPU_FIELD_LOCATION;
-    param->output_location = QUDA_CPU_FIELD_LOCATION;
-#endif
+
+    if (reorder_location() == QUDA_CUDA_FIELD_LOCATION) {
+      param->input_location = QUDA_CUDA_FIELD_LOCATION;
+      param->output_location = QUDA_CUDA_FIELD_LOCATION;
+      param->gamma_basis = cuda_cs_param_split.gammaBasis;
+      param->dirac_order = QUDA_INTERNAL_DIRAC_ORDER;
+    }
 
     std::vector<quda::ColorSpinorField *> _collect_b(param->num_src_per_sub_partition, nullptr);
     std::vector<quda::ColorSpinorField *> _collect_x(param->num_src_per_sub_partition, nullptr);
     for (int n = 0; n < param->num_src_per_sub_partition; n++) {
-#if 1
-      _collect_b[n] = new quda::cudaColorSpinorField(cuda_cs_param_split);
-      _collect_x[n] = new quda::cudaColorSpinorField(cuda_cs_param_split);
-#else
-      _collect_b[n] = new quda::cpuColorSpinorField(cpu_cs_param_split);
-      _collect_x[n] = new quda::cpuColorSpinorField(cpu_cs_param_split);
-#endif
+      if (reorder_location() == QUDA_CUDA_FIELD_LOCATION) {
+        _collect_b[n] = new quda::cudaColorSpinorField(cuda_cs_param_split);
+        _collect_x[n] = new quda::cudaColorSpinorField(cuda_cs_param_split);
+      } else {
+        _collect_b[n] = new quda::cpuColorSpinorField(cpu_cs_param_split);
+        _collect_x[n] = new quda::cpuColorSpinorField(cpu_cs_param_split);
+      }
+
       auto b_first = _h_b.begin() + n * num_sub_partition;
       auto b_last = _h_b.begin() + (n + 1) * num_sub_partition;
       std::vector<ColorSpinorField *> _v_b(b_first, b_last);
