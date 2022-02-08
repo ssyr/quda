@@ -9,7 +9,6 @@
 #include <color_spinor_field.h>
 #include <gauge_field.h>
 #include <mpi.h>
-#include <blas_cublas.h>
 #include <typeinfo>
 #include <cublas_v2.h>
 #include <interface_qlua_internal.h>
