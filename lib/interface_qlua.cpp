@@ -9,6 +9,7 @@
 #include <color_spinor_field.h>
 #include <gauge_field.h>
 #include <mpi.h>
+#include <communicator_quda.h>
 #include <typeinfo>
 #include <cublas_v2.h>
 #include <interface_qlua_internal.h>
@@ -141,7 +142,7 @@ static int
 check_quda_comms(const qudaLattice *qS)
 {
   int eq = 1;
-  const Topology *qtopo = comm_default_topology();
+  const Topology *qtopo = get_default_communicator().comm_default_topology();
   eq = eq && (comm_ndim(qtopo) == qS->rank);
   /* cannot check my_rank : no read method;
    * node coords are enough */

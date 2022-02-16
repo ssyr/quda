@@ -21,7 +21,7 @@ void init_communicator_stack(int ndim, const int *dims, QudaCommsMap rank_from_c
 
 void finalize_communicator_stack() { communicator_stack.clear(); }
 
-static Communicator &get_default_communicator()
+Communicator &get_default_communicator()
 {
   auto search = communicator_stack.find(default_comm_key);
   if (search == communicator_stack.end()) { errorQuda("Default communicator can't be found."); }

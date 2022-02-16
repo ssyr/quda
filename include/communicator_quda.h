@@ -804,6 +804,8 @@ struct Communicator {
 constexpr quda::CommKey default_comm_key = {1, 1, 1, 1};
 
 void push_communicator(const quda::CommKey &split_key);
+Communicator &get_default_communicator();
+Communicator &get_current_communicator();
 
 /** @brief These routine broadcast the data according to the default communicator */
 void comm_broadcast_global(void *data, size_t nbytes);
