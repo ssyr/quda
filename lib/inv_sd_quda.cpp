@@ -3,90 +3,97 @@
 #include <cmath>
 #include <iostream>
 
-#include <quda_internal.h>
-#include <color_spinor_field.h>
 #include <blas_quda.h>
-#include <dslash_quda.h>
 #include <invert_quda.h>
 #include <util_quda.h>
 
 namespace quda {
 
-  using namespace blas;
+  SD::SD(const DiracMatrix &mat, SolverParam &param) : Solver(mat, mat, mat, mat, param) { }
 
-  SD::SD(const DiracMatrix &mat, SolverParam &param, TimeProfile &profile) :
-    Solver(mat, mat, mat, mat, param, profile),
-    init(false)
+  void SD::create(cvector_ref<ColorSpinorField> &x, cvector_ref<const ColorSpinorField> &b)
   {
+    Solver::create(x, b);
 
-  }
-
-  SD::~SD(){
-    if(!param.is_preconditioner) profile.TPSTART(QUDA_PROFILE_FREE);
-    if(init){
-      delete r;
-      delete Ar; 
-      delete y;
-    }
-    if(!param.is_preconditioner) profile.TPSTOP(QUDA_PROFILE_FREE);
-  }
-
-
-  void SD::operator()(ColorSpinorField &x, ColorSpinorField &b)
-  {
-    commGlobalReductionSet(param.global_reduction);
-
-    if(!init){
-      r = new cudaColorSpinorField(b);
-      Ar = new cudaColorSpinorField(b);
-      y = new cudaColorSpinorField(b);
+    if (!init || r.size() != b.size()) {
+      resize(r, b.size(), QUDA_NULL_FIELD_CREATE, b[0]);
+      resize(Ar, b.size(), QUDA_NULL_FIELD_CREATE, b[0]);
       init = true;
     }
+  }
 
-    double b2 = norm2(b);
+  cvector_ref<const ColorSpinorField> SD::get_residual()
+  {
+    if (!init) errorQuda("No residual vector present");
+    return r;
+  }
 
-    zero(*r), zero(x);
-    double r2 = xmyNorm(b,*r);
-    double alpha=0.; 
-    double3 rAr;
+  void SD::operator()(cvector_ref<ColorSpinorField> &x, cvector_ref<const ColorSpinorField> &b)
+  {
+    commGlobalReductionPush(param.global_reduction);
 
-    int k=0;
-    while(k < param.maxiter-1){
+    create(x, b);
 
-      mat(*Ar, *r, *y);
-      rAr = cDotProductNormA(*r, *Ar);
-      alpha = rAr.z/rAr.x;
-      axpy(alpha, *r, x);
-      axpy(-alpha, *Ar, *r);
+    vector<double> b2 = blas::norm2(b);
+    vector<double> r2;
 
-      if(getVerbosity() >= QUDA_VERBOSE){
-        r2 = norm2(*r);
-        printfQuda("Steepest Descent: %d iterations, |r| = %e, |r|/|b| = %e\n", k, sqrt(r2), sqrt(r2/b2));
+    // Check to see that we're not trying to invert on a zero-field source
+    if (is_zero_src(x, b, b2)) return;
+
+    if (param.use_init_guess == QUDA_USE_INIT_GUESS_YES) {
+      // Compute the true residual
+      mat(r, x);
+      r2 = blas::xmyNorm(b, r);
+      for (auto i = 0u; i < b.size(); i++)
+        if (b2[i] == 0) b2[i] = r2[i];
+    } else {
+      blas::zero(x);
+      blas::copy(r, b);
+      r2 = b2;
+    }
+
+    auto stop = stopping(param.tol, b2, param.residual_type);
+
+    int res_increase = 0;
+    int k = 0;
+    while (k < param.maxiter) {
+      mat(Ar, r);
+      auto rAr = blas::cDotProductNormA(r, Ar);
+      vector<double> alpha(b.size());
+      for (auto i = 0u; i < b.size(); i++) {
+        alpha[i] = rAr[i].z / rAr[i].x;
+        r2[i] = rAr[i].z; // this is r2 from the prior iteration
       }
 
-      ++k;
+      PrintStats("SD", k, r2, b2);
+
+      if (r2 < stop) {
+        mat(r, x);
+        r2 = blas::xmyNorm(b, r);
+        if (r2 < stop) break;
+        if (++res_increase > param.max_res_increase) {
+          warningQuda("SD: solver exiting due to too many residual increases");
+          break;
+        }
+      } else {
+        blas::axpy(alpha, r, x);
+        blas::axpy(-alpha, Ar, r);
+      }
+      k++;
     }
 
-
-    rAr = cDotProductNormA(*r, *Ar);
-    alpha = rAr.z/rAr.x;
-    axpy(alpha, *r, x);
-    if(getVerbosity() >= QUDA_VERBOSE){
-      axpy(-alpha, *Ar, *r);
-      r2 = norm2(*r);
-      printfQuda("Steepest Descent: %d iterations, |r| = %e, |r|/|b| = %e\n", k, sqrt(r2), sqrt(r2/b2));
-      ++k;
-    }
-
-    if(getVerbosity() >= QUDA_DEBUG_VERBOSE){
+    param.iter += k;
+    if (param.compute_true_res) {
       // Compute the true residual
-      mat(*r, x, *y);
-      double true_r2 = xmyNorm(b,*r);
-      printfQuda("Steepest Descent: %d iterations, accumulated |r| = %e, true |r| = %e,  |r|/|b| = %e\n", k, sqrt(r2), sqrt(true_r2), sqrt(true_r2/b2));
-    } // >= QUDA_DEBUG_VERBOSITY
+      mat(r, x);
+      auto true_r2 = blas::xmyNorm(b, r);
+      PrintSummary("SD", k, true_r2, b2, stop);
+      for (auto i = 0u; i < b2.size(); i++) param.true_res[i] = sqrt(true_r2[i] / b2[i]);
+    } else {
+      PrintSummary("SD", k, r2, b2, stop);
+    }
 
-    commGlobalReductionSet(true);
-    return;
+    commGlobalReductionPop();
   }
 
 } // namespace quda

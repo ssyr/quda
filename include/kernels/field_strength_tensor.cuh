@@ -1,11 +1,14 @@
 #include <gauge_field_order.h>
 #include <index_helper.cuh>
 #include <quda_matrix.h>
+#include <thread_array.h>
+#include <kernel.h>
 
 namespace quda
 {
 
-  template <typename Float_, int nColor_, QudaReconstructType recon_ > struct FmunuArg
+  template <typename Float_, int nColor_, QudaReconstructType recon_ >
+  struct FmunuArg : kernel_param<>
   {
     using Float = Float_;
     static constexpr int nColor = nColor_;
@@ -17,14 +20,13 @@ namespace quda
     G u;
     F f;
 
-    int threads; // number of active threads required
     int X[4];    // grid dimensions
     int border[4];
 
     FmunuArg(GaugeField &f, const GaugeField &u) :
-      threads(f.VolumeCB()),
-      f(f),
-      u(u)
+      kernel_param(dim3(f.VolumeCB(), 2, 6)),
+      u(u),
+      f(f)
     {
       for (int dir = 0; dir < 4; ++dir) {
         X[dir] = f.X()[dir];
@@ -33,25 +35,28 @@ namespace quda
     }
   };
 
-  template <int mu, int nu, typename Arg>
-  __device__ __host__ __forceinline__ void computeFmunuCore(Arg &arg, int idx, int parity)
+  using computeFmunuCoreOps = KernelOps<thread_array<int, 4>>;
+  template <typename Ftor>
+  __device__ __host__ inline void computeFmunuCore(const Ftor &ftor, int idx, int parity, int mu, int nu)
   {
-    typedef Matrix<complex<typename Arg::Float>, 3> Link;
+    using Arg = typename Ftor::Arg;
+    using Link = Matrix<complex<typename Arg::Float>, 3>;
+    auto &arg = ftor.arg;
 
     int x[4];
-    auto &X = arg.X;
+    int X[4];
 
-    getCoords(x, idx, X, parity);
+    getCoords(x, idx, arg.X, parity);
     for (int dir = 0; dir < 4; ++dir) {
       x[dir] += arg.border[dir];
-      X[dir] += 2 * arg.border[dir];
+      X[dir] = arg.X[dir] + 2 * arg.border[dir];
     }
 
     Link F;
     { // U(x,mu) U(x+mu,nu) U[dagger](x+nu,mu) U[dagger](x,nu)
 
       // load U(x)_(+mu)
-      int dx[4] = {0, 0, 0, 0};
+      thread_array<int, 4> dx {ftor};
       Link U1 = arg.u(mu, linkIndexShift(x, dx, X), parity);
 
       // load U(x+mu)_(+nu)
@@ -74,7 +79,7 @@ namespace quda
     { // U(x,nu) U[dagger](x+nu-mu,mu) U[dagger](x-mu,nu) U(x-mu, mu)
 
       // load U(x)_(+nu)
-      int dx[4] = {0, 0, 0, 0};
+      thread_array<int, 4> dx {ftor};
       Link U1 = arg.u(nu, linkIndexShift(x, dx, X), parity);
 
       // load U(x+nu)_(-mu) = U(x+nu-mu)_(+mu)
@@ -101,7 +106,7 @@ namespace quda
     { // U[dagger](x-nu,nu) U(x-nu,mu) U(x+mu-nu,nu) U[dagger](x,mu)
 
       // load U(x)_(-nu)
-      int dx[4] = {0, 0, 0, 0};
+      thread_array<int, 4> dx {ftor};
       dx[nu]--;
       Link U1 = arg.u(nu, linkIndexShift(x, dx, X), 1 - parity);
       dx[nu]++;
@@ -128,7 +133,7 @@ namespace quda
     { // U[dagger](x-mu,mu) U[dagger](x-mu-nu,nu) U(x-mu-nu,mu) U(x-nu,nu)
 
       // load U(x)_(-mu)
-      int dx[4] = {0, 0, 0, 0};
+      thread_array<int, 4> dx {ftor};
       dx[mu]--;
       Link U1 = arg.u(mu, linkIndexShift(x, dx, X), 1 - parity);
       dx[mu]++;
@@ -167,48 +172,33 @@ namespace quda
       F *= static_cast<typename Arg::Float>(0.125); // 18 real multiplications
       // 36 floating point operations here
     }
-    
-    constexpr int munu_idx = (mu * (mu - 1)) / 2 + nu; // lower-triangular indexing
+
+    int munu_idx = (mu * (mu - 1)) / 2 + nu; // lower-triangular indexing
     arg.f(munu_idx, idx, parity) = F;
   }
 
-  template <typename Arg> __global__ void computeFmunuKernel(Arg arg)
-  {
-    int x_cb = threadIdx.x + blockIdx.x * blockDim.x;
-    int parity = threadIdx.y + blockIdx.y * blockDim.y;
-    int mu_nu = threadIdx.z + blockIdx.z * blockDim.z;
-    if (x_cb >= arg.threads) return;
-    if (mu_nu >= 6) return;
-
-    switch (mu_nu) { // F[1,0], F[2,0], F[2,1], F[3,0], F[3,1], F[3,2]
-    case 0: computeFmunuCore<1, 0>(arg, x_cb, parity); break;
-    case 1: computeFmunuCore<2, 0>(arg, x_cb, parity); break;
-    case 2: computeFmunuCore<2, 1>(arg, x_cb, parity); break;
-    case 3: computeFmunuCore<3, 0>(arg, x_cb, parity); break;
-    case 4: computeFmunuCore<3, 1>(arg, x_cb, parity); break;
-    case 5: computeFmunuCore<3, 2>(arg, x_cb, parity); break;
+  template <typename Arg_> struct ComputeFmunu : computeFmunuCoreOps {
+    using Arg = Arg_;
+    const Arg &arg;
+    template <typename... OpsArgs>
+    constexpr ComputeFmunu(const Arg &arg, const OpsArgs &...ops) : KernelOpsT(ops...), arg(arg)
+    {
     }
-  }
+    static constexpr const char* filename() { return KERNEL_FILE; }
 
-  template <typename Arg> void computeFmunuCPU(Arg &arg)
-  {
-    for (int parity = 0; parity < 2; parity++) {
-      for (int x_cb = 0; x_cb < arg.threads; x_cb++) {
-        for (int mu = 0; mu < 4; mu++) {
-          for (int nu = 0; nu < mu; nu++) {
-            int mu_nu = (mu * (mu - 1)) / 2 + nu;
-            switch (mu_nu) { // F[1,0], F[2,0], F[2,1], F[3,0], F[3,1], F[3,2]
-            case 0: computeFmunuCore<1, 0>(arg, x_cb, parity); break;
-            case 1: computeFmunuCore<2, 0>(arg, x_cb, parity); break;
-            case 2: computeFmunuCore<2, 1>(arg, x_cb, parity); break;
-            case 3: computeFmunuCore<3, 0>(arg, x_cb, parity); break;
-            case 4: computeFmunuCore<3, 1>(arg, x_cb, parity); break;
-            case 5: computeFmunuCore<3, 2>(arg, x_cb, parity); break;
-            }
-          }
-        }
+    __device__ __host__ inline void operator()(int x_cb, int parity, int mu_nu)
+    {
+      int mu, nu;
+      switch (mu_nu) { // F[1,0], F[2,0], F[2,1], F[3,0], F[3,1], F[3,2]
+      case 0: mu = 1, nu = 0; break;
+      case 1: mu = 2, nu = 0; break;
+      case 2: mu = 2, nu = 1; break;
+      case 3: mu = 3, nu = 0; break;
+      case 4: mu = 3, nu = 1; break;
+      case 5: mu = 3, nu = 2; break;
       }
+      computeFmunuCore(*this, x_cb, parity, mu, nu);
     }
-  }
+  };
 
 } // namespace quda

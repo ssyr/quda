@@ -1,16 +1,18 @@
 #pragma once
 
+#include <enum_quda.h>
+
 namespace quda {
   /**
      Compute the checkerboard 1-d index from the 4-d coordinate x[] + dx[]
 
+     @param[in] x 4-d lattice index
+     @param[in] dx 4-d shift index
+     @param[in] X Full lattice dimensions
      @return 1-d checkerboard index
-     @param x 4-d lattice index
-     @param dx 4-d shift index
-     @param X Full lattice dimensions
    */
   template <typename I, typename J, typename K>
-  __device__ __host__ inline int linkIndexShift(const I x[], const J dx[], const K X[4]) {
+  __device__ __host__ inline int linkIndexShift(const I &x, const J &dx, const K &X) {
     int y[4];
 #pragma unroll
     for ( int i = 0; i < 4; i++ ) y[i] = (x[i] + dx[i] + X[i]) % X[i];
@@ -21,14 +23,14 @@ namespace quda {
   /**
      Compute the checkerboard 1-d index from the 4-d coordinate x[] + dx[]
 
+     @param[out] y new 4-d lattice index
+     @param[in] x original 4-d lattice index
+     @param[in] dx 4-d shift index
+     @param[in] X Full lattice dimensions
      @return 1-d checkerboard index
-     @param y new 4-d lattice index
-     @param x original 4-d lattice index
-     @param dx 4-d shift index
-     @param X Full lattice dimensions
    */
-  template <typename I, typename J, typename K>
-  __device__ __host__ inline int linkIndexShift(I y[], const I x[], const J dx[], const K X[4]) {
+  template <typename I, typename J, typename K, typename L>
+  __device__ __host__ inline int linkIndexShift(I &y, const J &x, const K &dx, const L &X) {
 #pragma unroll
     for ( int i = 0; i < 4; i++ ) y[i] = (x[i] + dx[i] + X[i]) % X[i];
     int idx = (((y[3] * X[2] + y[2]) * X[1] + y[1]) * X[0] + y[0]) >> 1;
@@ -38,12 +40,12 @@ namespace quda {
   /**
      Compute the checkerboard 1-d index from the 4-d coordinate x[]
 
+     @param[in] x 4-d lattice index
+     @param[in] X Full lattice dimensions
      @return 1-d checkerboard index
-     @param x 4-d lattice index
-     @param X Full lattice dimensions
    */
-  template <typename I>
-  __device__ __host__ inline int linkIndex(const int x[], const I X[4]) {
+  template <typename I, typename J>
+  __device__ __host__ inline int linkIndex(const I &x, const J &X) {
     int idx = (((x[3] * X[2] + x[2]) * X[1] + x[1]) * X[0] + x[0]) >> 1;
     return idx;
   }
@@ -51,13 +53,13 @@ namespace quda {
   /**
      Compute the checkerboard 1-d index from the 4-d coordinate x[]
 
+     @param[in] y copy of 4-d lattice index
+     @param[in] x 4-d lattice index
+     @param[in] X Full lattice dimensions
      @return 1-d checkerboard index
-     @param y copy of 4-d lattice index
-     @param x 4-d lattice index
-     @param X Full lattice dimensions
    */
-  template <typename I>
-  __device__ __host__ inline int linkIndex(int y[], const int x[], const I X[4]) {
+  template <typename I, typename J, typename K>
+  __device__ __host__ inline int linkIndex(I &y, const J &x, const K &X) {
     int idx = (((x[3] * X[2] + x[2]) * X[1] + x[1]) * X[0] + x[0]) >> 1;
     y[0] = x[0]; y[1] = x[1]; y[2] = x[2]; y[3] = x[3];
     return idx;
@@ -66,11 +68,11 @@ namespace quda {
   /**
        Compute the checkerboard 1-d index from the 4-d coordinate x[] +n in the mu direction
 
+       @tparam[in] n number of hops (=/-) in the mu direction
+       @param[in] x 4-d lattice index
+       @param[in] X Full lattice dimensions
+       @param[in] mu direction in which to add n hops
        @return 1-d checkerboard index
-       @tparam n number of hops (=/-) in the mu direction
-       @param x 4-d lattice index
-       @param X Full lattice dimensions
-       @param mu direction in which to add n hops
      */
   template <typename I, int n, typename Coord>
   __device__ __host__ inline int linkIndexDn(const Coord &x, const I X[4], const int mu)
@@ -84,25 +86,84 @@ namespace quda {
   }
 
   /**
+     @brief Compute the checkerboard 1-d index from the 4-d coordinate x[] + nFace in the mu direction
+
+     @param[in] x Grid coordinates
+     @param[in] X Grid dimensions
+     @param[in] dim Dimension of the shift
+     @param[in] nFace Depth of the halo
+     @return 1-d checkboard index
+  */
+  template <typename I, typename Coord>
+  __device__ __host__ inline auto linkIndexHop(const Coord &x, const I X[4], const int mu, int nFace)
+  {
+    int y[4];
+#pragma unroll
+    for ( int i = 0; i < 4; i++ ) y[i] = x[i];
+    switch (mu) {
+    case 0: y[0] = (y[0] + nFace + X[0]) % X[0]; break;
+    case 1: y[1] = (y[1] + nFace + X[1]) % X[1]; break;
+    case 2: y[2] = (y[2] + nFace + X[2]) % X[2]; break;
+    case 3: y[3] = (y[3] + nFace + X[3]) % X[3]; break;
+    }
+    return (((y[3] * X[2] + y[2]) * X[1] + y[1]) * X[0] + y[0]) >> 1;
+  }
+
+  template <typename T, typename Arg>
+  constexpr bool is_boundary(T &coord, int dim, int dir, const Arg &arg)
+  {
+    bool is_boundary = false;
+    if (dir == 0) {
+      switch (dim) { // backwards boundary
+      case 0: is_boundary = coord[0] - arg.nFace < 0; break;
+      case 1: is_boundary = coord[1] - arg.nFace < 0; break;
+      case 2: is_boundary = coord[2] - arg.nFace < 0; break;
+      case 3: is_boundary = coord[3] - arg.nFace < 0; break;
+      }
+    } else if (dir == 1) {
+      switch (dim) { // forwards boundary
+      case 0: is_boundary = coord[0] + arg.nFace >= arg.dim[0]; break;
+      case 1: is_boundary = coord[1] + arg.nFace >= arg.dim[1]; break;
+      case 2: is_boundary = coord[2] + arg.nFace >= arg.dim[2]; break;
+      case 3: is_boundary = coord[3] + arg.nFace >= arg.dim[3]; break;
+      }
+    }
+    return is_boundary;
+}
+
+  /**
      Compute the checkerboard 1-d index from the 4-d coordinate x[] -1 in the mu direction
 
+     @param[in] x 4-d lattice index
+     @param[in] X Full lattice dimensions
+     @param[in] mu direction in which to subtract 1
      @return 1-d checkerboard index
-     @param x 4-d lattice index
-     @param X Full lattice dimensions
-     @param mu direction in which to subtract 1
    */
   template <typename I, typename Coord> __device__ __host__ inline int linkIndexM1(const Coord &x, const I X[4], const int mu)
   {
     return linkIndexDn<I, -1>(x, X, mu);
   }
+  
+  /**
+     Compute the checkerboard 1-d index from the 4-d coordinate x[] -2 in the mu direction
+
+     @param[in] x 4-d lattice index
+     @param[in] X Full lattice dimensions
+     @param[in] mu direction in which to subtract 2
+     @return 1-d checkerboard index
+   */
+  template <typename I, typename Coord> __device__ __host__ inline int linkIndexM2(const Coord &x, const I X[4], const int mu)
+  {
+    return linkIndexDn<I, -2>(x, X, mu);
+  }  
 
   /**
      Compute the checkerboard 1-d index from the 4-d coordinate x[] -3 in the mu direction
 
+     @param[in] x 4-d lattice index
+     @param[in] X Full lattice dimensions
+     @param[in] mu direction in which to subtract 3
      @return 1-d checkerboard index
-     @param x 4-d lattice index
-     @param X Full lattice dimensions
-     @param mu direction in which to subtract 3
    */
   template <typename I, typename Coord> __device__ __host__ inline int linkIndexM3(const Coord &x, const I X[4], const int mu)
   {
@@ -112,10 +173,10 @@ namespace quda {
   /**
      Compute the full 1-d index from the 4-d coordinate x[] +1 in the mu direction
 
+     @param[in] x 4-d lattice index
+     @param[in] X Full lattice dimensions
+     @param[in] mu direction in which to add 1
      @return 1-d checkerboard index
-     @param x 4-d lattice index
-     @param X Full lattice dimensions
-     @param mu direction in which to add 1
    */
   template <typename I>
   __device__ __host__ inline int linkNormalIndexP1(const int x[], const I X[4], const int mu) {
@@ -130,23 +191,37 @@ namespace quda {
   /**
      Compute the checkerboard 1-d index from the 4-d coordinate x[] +1 in the mu direction
 
+     @param[in] x 4-d lattice index
+     @param[in] X Full lattice dimensions
+     @param[in] mu direction in which to add 1
      @return 1-d checkerboard index
-     @param x 4-d lattice index
-     @param X Full lattice dimensions
-     @param mu direction in which to add 1
    */
   template <typename I, typename Coord>
   __device__ __host__ inline int linkIndexP1(const Coord &x, const I X[4], const int mu) {
     return linkIndexDn<I, 1>(x, X, mu);
   }
+  
+ /**
+     Compute the checkerboard 1-d index from the 4-d coordinate x[] +2 in the mu direction
+
+     @param[in] x 4-d lattice index
+     @param[in] X Full lattice dimensions
+     @param[in] mu direction in which to add 2
+     @return 1-d checkerboard index
+   */
+  template <typename I, typename Coord>
+  __device__ __host__ inline int linkIndexP2(const Coord &x, const I X[4], const int mu) {
+    return linkIndexDn<I, 2>(x, X, mu);
+  }
+  
 
   /**
      Compute the checkerboard 1-d index from the 4-d coordinate x[] +3 in the mu direction
 
+     @param[in] x 4-d lattice index
+     @param[in] X Full lattice dimensions
+     @param[in] mu direction in which to add 3
      @return 1-d checkerboard index
-     @param x 4-d lattice index
-     @param X Full lattice dimensions
-     @param mu direction in which to add 3
    */
   template <typename I, typename Coord> __device__ __host__ inline int linkIndexP3(const Coord &x, const I X[4], const int mu)
   {
@@ -207,7 +282,7 @@ namespace quda {
      @return Full linear lattice index
    */
   template <typename Coord, typename I, typename J>
-  __device__ __host__ inline int getCoordsCB(Coord &x, int cb_index, const I X[], J X0h, int parity)
+  __device__ __host__ inline int getCoordsCB(Coord &x, int cb_index, const I &X, J X0h, int parity)
   {
     //x[3] = cb_index/(X[2]*X[1]*X[0]/2);
     //x[2] = (cb_index/(X[1]*X[0]/2)) % X[2];
@@ -236,7 +311,7 @@ namespace quda {
      @param[in] parity Site parity
      @return Full linear lattice index
    */
-  template <typename Coord, typename I> __device__ __host__ inline int getCoords(Coord &x, int cb_index, const I X[], int parity)
+  template <typename Coord, typename I> __device__ __host__ inline int getCoords(Coord &x, int cb_index, const I &X, int parity)
   {
     return getCoordsCB(x, cb_index, X, X[0] >> 1, parity);
   }
@@ -249,8 +324,8 @@ namespace quda {
      @param X Full lattice dimensions
      @param parity Site parity
    */
-  template <typename I, typename J>
-  __device__ __host__ inline void getCoordsExtended(I x[], int cb_index, const J X[], int parity, const int R[]) {
+  template <typename Coord, typename J>
+  __device__ __host__ inline void getCoordsExtended(Coord &x, int cb_index, const J &X, int parity, const int R[]) {
     //x[3] = cb_index/(X[2]*X[1]*X[0]/2);
     //x[2] = (cb_index/(X[1]*X[0]/2)) % X[2];
     //x[1] = (cb_index/(X[0]/2)) % X[1];
@@ -279,7 +354,7 @@ namespace quda {
      @return Full linear lattice index
    */
   template <typename Coord, typename I, typename J>
-  __device__ __host__ inline int getCoords5CB(Coord &x, int cb_index, const I X[5], J X0h, int parity, QudaPCType pc_type)
+  __device__ __host__ inline int getCoords5CB(Coord &x, int cb_index, const I &X, J X0h, int parity, QudaPCType pc_type)
   {
     //x[4] = cb_index/(X[3]*X[2]*X[1]*X[0]/2);
     //x[3] = (cb_index/(X[2]*X[1]*X[0]/2) % X[3];
@@ -310,8 +385,8 @@ namespace quda {
      @param[in] parity Site parity
      @return Full linear lattice index
    */
-  template <typename I>
-  __device__ __host__ inline int getCoords5(int x[5], int cb_index, const I X[5], int parity, QudaPCType pc_type)
+  template <typename Coord, typename I>
+  __device__ __host__ inline int getCoords5(Coord &x, int cb_index, const I &X, int parity, QudaPCType pc_type)
   {
     return getCoords5CB(x, cb_index, X, X[0] >> 1, parity, pc_type);
   }
@@ -326,7 +401,7 @@ namespace quda {
      @param parity Site parity
    */
   template <typename I>
-  __device__ __host__ inline int getIndexFull(int cb_index, const I X[4], int parity) {
+  __device__ __host__ inline int getIndexFull(int cb_index, const I &X, int parity) {
     int za = (cb_index / (X[0] / 2));
     int zb =  (za / X[1]);
     int x1 = za - zb * X[1];
@@ -346,7 +421,7 @@ namespace quda {
       @return 1-d checkerboard index
    */
   template <typename I>
-  __device__ __host__ inline int getParityCBFromFull(int& out_parity, const I X[4], const int full_index) {
+  __device__ __host__ inline int getParityCBFromFull(int& out_parity, const I &X, const int full_index) {
 
     const int za = (full_index / X[0]);
     const int x0 = full_index % X[0];
@@ -615,7 +690,7 @@ namespace quda {
   }
 
   /**
-     @brief Overloaded variant of indexFromFaceIndex where we use the
+     @brief Overloaded variant of coordsFromFaceIndex where we use the
      parity declared in arg.
    */
   template <int nDim, QudaPCType type, int dim_, int nLayers, typename Coord, typename Arg>
@@ -634,8 +709,8 @@ namespace quda {
      @param[in] arg Argument struct with required meta data
      @return Checkerboard lattice index
   */
-  template <int nDim, QudaPCType type, int dim, int nLayers, int face_num, typename Arg>
-  inline __device__ __host__ int indexFromFaceIndex(int face_idx, int parity, const Arg &arg)
+  template <int nDim, typename Arg>
+  constexpr int indexFromFaceIndex(int dim, int face_num, int face_idx, int parity, int nLayers, QudaPCType type, const Arg &arg)
   {
     // intrinsic parity of the face depends on offset of first element
     int face_parity = (parity + face_num * (arg.dc.X[dim] - nLayers)) & 1;
@@ -699,7 +774,7 @@ namespace quda {
     // compute index into the full local volume
     int gap = arg.dc.X[dim] - nLayers;
     int idx = face_idx;
-    int aux;
+    int aux = 0;
     switch (dim) {
     case 0:
       aux = face_idx / arg.dc.face_X[dim];
@@ -724,13 +799,22 @@ namespace quda {
   }
 
   /**
+     @brief Overloaded variant of indexFromFaceIndex with templated parameters
+  */
+  template <int nDim, QudaPCType type, int dim, int nLayers, int face_num, typename Arg>
+  constexpr int indexFromFaceIndex(int face_idx, int parity, const Arg &arg)
+  {
+    return indexFromFaceIndex<nDim>(dim, face_num, face_idx, parity, nLayers, type, arg);
+  }
+
+  /**
      @brief Overloaded variant of indexFromFaceIndex where we use the
      parity declared in arg.
    */
   template <int nDim, QudaPCType type, int dim, int nLayers, int face_num, typename Arg>
-  inline __device__ __host__ int indexFromFaceIndex(int face_idx, const Arg &arg)
+  constexpr int indexFromFaceIndex(int face_idx, const Arg &arg)
   {
-    return indexFromFaceIndex<nDim, type, dim, nLayers, face_num>(face_idx, arg.parity, arg);
+    return indexFromFaceIndex<nDim>(dim, face_num, face_idx, arg.parity, nLayers, type, arg);
   }
 
   /**
@@ -750,8 +834,8 @@ namespace quda {
 
   // int idx = indexFromFaceIndex<4,QUDA_4D_PC,dim,nFace,0>(ghost_idx, parity, arg);
 
-  template <int nDim, QudaPCType type, int dim, int nLayers, int face_num, typename Arg>
-  inline __device__ int indexFromFaceIndexStaggered(int face_idx_in, int parity, const Arg &arg)
+  template <int nDim, typename Arg>
+  constexpr int indexFromFaceIndexStaggered(int dim, int face_num, int face_idx_in, int parity, int nLayers, QudaPCType, const Arg &arg)
   {
     const auto *X = arg.dc.X;            // grid dimension
     const auto *dims = arg.dc.dims[dim]; // dimensions of the face
@@ -778,7 +862,7 @@ namespace quda {
     // compute index into the full local volume
     int gap = X[dim] - nLayers;
     int idx = face_idx;
-    int aux;
+    int aux = 0;
     switch (dim) {
     case 0:
       aux = face_idx;
@@ -802,6 +886,12 @@ namespace quda {
     return (idx + s * V4) >> 1;
   }
 
+  template <int nDim, QudaPCType type, int dim, int nLayers, int face_num, typename Arg>
+  constexpr int indexFromFaceIndexStaggered(int face_idx_in, int parity, const Arg &arg)
+  {
+    return indexFromFaceIndexStaggered<nDim>(dim, face_num, face_idx_in, parity, nLayers, type, arg);
+  }
+
   /**
      @brief Determines which face a given thread is computing.  Also
      rescale face_idx so that is relative to a given dimension.  If 5-d
@@ -817,13 +907,12 @@ namespace quda {
      @return dimension this face_idx corresponds to
   */
   template <int nDim = 4, typename Arg>
-  __host__ __device__ inline int dimFromFaceIndex(int &face_idx, int tid, const Arg &arg)
+  constexpr int dimFromFaceIndex(int &face_idx, int tid, const Arg &arg)
   {
-
     // s - the coordinate in the fifth dimension - is the slowest-changing coordinate
-    const int s = (nDim == 5 ? tid / arg.threads : 0);
+    const int s = (nDim == 5 ? tid / arg.work_items : 0);
 
-    face_idx = tid - s * arg.threads; // face_idx = face_idx % arg.threads
+    face_idx = tid - s * arg.work_items; // face_idx = face_idx % arg.work_items
 
     if (face_idx < arg.threadDimMapUpper[0]) {
       face_idx += s * arg.threadDimMapUpper[0];
@@ -841,52 +930,6 @@ namespace quda {
       face_idx += s * (arg.threadDimMapUpper[3] - arg.threadDimMapLower[3]);
       return 3;
     }
-  }
-
-  template <int nDim = 4, typename Arg> __host__ __device__ inline int dimFromFaceIndex(int &face_idx, const Arg &arg)
-  {
-    return dimFromFaceIndex<nDim>(face_idx, face_idx, arg);
-  }
-
-  /**
-     @brief Swizzler for reordering the (x) thread block indices - use on
-     conjunction with swizzle-factor autotuning to find the optimum
-     swizzle factor.  Specifically, the thread block id is remapped by
-     transposing its coordinates: if the original order can be
-     parametrized by
-
-     blockIdx.x = j * swizzle + i,
-
-     then the new order is
-
-     block_idx = i * (gridDim.x / swizzle) + j
-
-     We need to factor out any remainder and leave this in original
-     ordering.
-
-     @param[in] swizzle Swizzle factor to be applied
-     @return Swizzled block index
-  */
-  //#define SWIZZLE
-  template <typename T> __device__ inline int block_idx(const T &swizzle)
-  {
-#ifdef SWIZZLE
-    // the portion of the grid that is exactly divisible by the number of SMs
-    const int gridp = gridDim.x - gridDim.x % swizzle;
-
-    int block_idx = blockIdx.x;
-    if (blockIdx.x < gridp) {
-      // this is the portion of the block that we are going to transpose
-      const int i = blockIdx.x % swizzle;
-      const int j = blockIdx.x / swizzle;
-
-      // transpose the coordinates
-      block_idx = i * (gridp / swizzle) + j;
-    }
-    return block_idx;
-#else
-    return blockIdx.x;
-#endif
   }
 
   /**
@@ -1061,6 +1104,28 @@ namespace quda {
       x[dim] = shift[dim] ? (x[dim]+shift[dim] + X[dim]) % X[dim] : x[dim];
     }
     return (((x[3]*X[2] + x[2])*X[1] + x[1])*X[0] + x[0]) >> 1;
+  }
+
+  /**
+     @brief Compute the flattened 4-d index from a separate T and
+     flattened 3-d XYZ index.
+     @param[in] t Temporal index
+     @param[in] xyz Flattened 3-d index
+     @param[in] X Lattice dimensions
+     @return The flattened 4-d index
+   */
+  template <int reduction_dim, class T> __device__ int idx_from_t_xyz(int t, int xyz, T X[4])
+  {
+    int x[4];
+#pragma unroll
+    for (int d = 0; d < 4; d++) {
+      if (d != reduction_dim) {
+        x[d] = xyz % X[d];
+        xyz = xyz / X[d];
+      }
+    }
+    x[reduction_dim] = t;
+    return (((x[3] * X[2] + x[2]) * X[1] + x[1]) * X[0] + x[0]);
   }
 
 } // namespace quda

@@ -1,4 +1,5 @@
 #include <random_quda.h>
+#include <timer.h>
 
 namespace quda
 {
@@ -8,9 +9,8 @@ namespace quda
    * @param[in] Gauge field upon which we are measuring.
    * @param[in,out] param Parameter struct that defines which
    * observables we are making and the resulting observables.
-   * @param[in] profile TimeProfile instance used for profiling.
    */
-  void gaugeObservables(GaugeField &u, QudaGaugeObservableParam &param, TimeProfile &profile);
+  void gaugeObservables(GaugeField &u, QudaGaugeObservableParam &param);
 
   /**
    * @brief Project the input gauge field onto the SU(3) group.  This
@@ -47,7 +47,6 @@ namespace quda
      @param[in] rngstate random states
      @param[in] sigma Width of Gaussian distrubution
   */
-
   void gaugeGauss(GaugeField &U, RNG &rngstate, double epsilon);
 
   /**
@@ -64,8 +63,31 @@ namespace quda
      @param[in] seed The seed used for the RNG
      @param[in] sigma Wdith of the Gaussian distribution
   */
-
   void gaugeGauss(GaugeField &U, unsigned long long seed, double epsilon);
+
+  /**
+     @brief Generate a random noise gauge field.  This variant allows
+     the user to manage the RNG state.  Works with arbitrary colors
+     (e.g., coarse grids).  Always exectures on the device so if
+     handed a host field, the interface will handle copying to and
+     from the device.
+     @param U The gauge field
+     @param randstates Random state
+     @param type The type of noise to create (QUDA_NOISE_GAUSSIAN or QUDA_NOISE_UNIFORM)
+  */
+  void gaugeNoise(GaugeField &U, RNG &rngstate, QudaNoiseType type);
+
+  /**
+     @brief Generate a random noise gauge field.  This variant allows
+     the user to manage the RNG state.  Works with arbitrary colors
+     (e.g., coarse grids).  Always exectures on the device so if
+     handed a host field, the interface will handle copying to and
+     from the device.
+     @param U The gauge field
+     @param seed The seed used for the RNG
+     @param type The type of noise to create (QUDA_NOISE_GAUSSIAN or QUDA_NOISE_UNIFORM)
+  */
+  void gaugeNoise(GaugeField &U, unsigned long long seed, QudaNoiseType type);
 
   /**
      @brief Apply APE smearing to the gauge field
@@ -73,8 +95,9 @@ namespace quda
      @param[out] dataDs Output smeared field
      @param[in] dataOr Input gauge field
      @param[in] alpha smearing parameter
+     @param[in] dir_ignore ignored direction
   */
-  void APEStep(GaugeField &dataDs, GaugeField &dataOr, double alpha);
+  void APEStep(GaugeField &dataDs, GaugeField &dataOr, double alpha, int dir_ignore);
 
   /**
      @brief Apply STOUT smearing to the gauge field
@@ -82,8 +105,9 @@ namespace quda
      @param[out] dataDs Output smeared field
      @param[in] dataOr Input gauge field
      @param[in] rho smearing parameter
+     @param[in] dir_ignore ignored direction
   */
-  void STOUTStep(GaugeField &dataDs, GaugeField &dataOr, double rho);
+  void STOUTStep(GaugeField &dataDs, GaugeField &dataOr, double rho, int dir_ignore);
 
   /**
      @brief Apply Over Improved STOUT smearing to the gauge field
@@ -92,8 +116,20 @@ namespace quda
      @param[in] dataOr Input gauge field
      @param[in] rho smearing parameter
      @param[in] epsilon smearing parameter
+     @param[in] dir_ignore ignored direction
   */
-  void OvrImpSTOUTStep(GaugeField &dataDs, GaugeField &dataOr, double rho, double epsilon);
+  void OvrImpSTOUTStep(GaugeField &dataDs, GaugeField &dataOr, double rho, double epsilon, int dir_ignore);
+
+  /**
+     @brief Apply HYP smearing to the gauge field
+     @param[out] dataDs Output smeared field
+     @param[in] dataOr Input gauge field
+     @param[in] alpha1 smearing parameter
+     @param[in] alpha2 smearing parameter
+     @param[in] alpha3 smearing parameter
+     @param[in] dir_ignore ignored direction
+  */
+  void HYPStep(GaugeField &dataDs, GaugeField &dataOr, double alpha1, double alpha2, double alpha3, int dir_ignore);
 
   /**
      @brief Apply Wilson Flow steps W1, W2, Vt to the gauge field.
@@ -101,13 +137,29 @@ namespace quda
      extended, with the input field being exchanged prior to calling
      this function.  On exit from this routine, the output field will
      have been exchanged.
-     @param[out] dataDs Output smeared field
-     @param[in] dataTemp Temp space
-     @param[in] dataOr Input gauge field
+     @param[out] out Output smeared field
+     @param[in] temp Temp space
+     @param[in] in Input gauge field
      @param[in] epsilon Step size
-     @param[in] wflow_type Wilson (1x1) or Symanzik improved (2x1) staples
+     @param[in] smear_type Wilson (1x1) or Symanzik improved (2x1) staples, else error
   */
-  void WFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, double epsilon, QudaWFlowType wflow_type);
+  void WFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, double epsilon, QudaGaugeSmearType smear_type);
+
+  /**
+     @brief Apply intermediary Wilson Flow steps W1, W2 or Vt to the gauge field.
+     This routine assumes that the input and output fields are
+     extended, with the input field being exchanged prior to calling
+     this function.  On exit from this routine, the output field will
+     have been exchanged.
+     @param[out] out Output smeared field
+     @param[in] temp Temp space
+     @param[in] in Input gauge field
+     @param[in] epsilon Step size
+     @param[in] smear_type Wilson (1x1) or Symanzik improved (2x1) staples, else error
+     @param[in] step_type Which intermediary Wilson Flow step (W1, W2 or Vt) to perform
+  */
+  void GFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, double epsilon, QudaGaugeSmearType smear_type,
+                 QudaWFlowStepType step_type);
 
   /**
    * @brief Gauge fixing with overrelaxation with support for single and multi GPU.
@@ -120,7 +172,7 @@ namespace quda
    * value is zero then the method stops when iteration reachs the
    * maximum number of steps defined by Nsteps
    * @param[in] reunit_interval, reunitarize gauge field when iteration count is a multiple of this
-   * @param[in] stopWtheta, 0 for MILC criterium and 1 to use the theta value
+   * @param[in] stopWtheta, 0 for MILC criterion and 1 to use the theta value
    */
   void gaugeFixingOVR(GaugeField &data, const int gauge_dir, const int Nsteps, const int verbose_interval,
                       const double relax_boost, const double tolerance, const int reunit_interval, const int stopWtheta);
@@ -136,7 +188,7 @@ namespace quda
    * @param[in] tolerance, torelance value to stop the method, if this
    * value is zero then the method stops when iteration reachs the
    * maximum number of steps defined by Nsteps
-   * @param[in] stopWtheta, 0 for MILC criterium and 1 to use the theta value
+   * @param[in] stopWtheta, 0 for MILC criterion and 1 to use the theta value
    */
   void gaugeFixingFFT(GaugeField &data, const int gauge_dir, const int Nsteps, const int verbose_interval,
                       const double alpha, const int autotune, const double tolerance, const int stopWtheta);
@@ -167,5 +219,14 @@ namespace quda
      smeared configuration
   */
   void computeQChargeDensity(double energy[3], double &qcharge, void *qdensity, const GaugeField &Fmunu);
+
+  /**
+   * @brief Compute the trace of the Polyakov loop in a given dimension
+   * @param[out] ploop The real and imaginary parts of the Polyakov loop
+   * @param[in] gauge The gauge field upon which to compute the Polyakov loop
+   * @param[in] dir The direction to compute the Polyakov loop in
+   * @param[in] profile TimeProfile instance used for profiling.
+   */
+  void gaugePolyakovLoop(double ploop[2], const GaugeField &u, int dir, TimeProfile &profile);
 
 } // namespace quda

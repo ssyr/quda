@@ -1,6 +1,6 @@
 #include <clover_field_order.h>
 #include <instantiate.h>
-#include <kernels/copy_field_offset.cuh>
+#include "copy_field_offset.hpp"
 
 namespace quda
 {
@@ -12,7 +12,6 @@ namespace quda
     {
       constexpr int length = 72;
       using Field = CloverField;
-      using real = typename mapper<Float>::type;
       using Element = typename mapper<Float>::type;
 
       if (in.isNative()) {
@@ -53,9 +52,9 @@ namespace quda
     }
   };
 
+#ifdef GPU_CLOVER_DIRAC
   void copyFieldOffset(CloverField &out, const CloverField &in, CommKey offset, QudaPCType pc_type)
   {
-#ifdef GPU_CLOVER_DIRAC
     if (out.Precision() < QUDA_SINGLE_PRECISION && out.Order() > 4) {
       errorQuda("Fixed-point precision not supported for order %d", out.Order());
     }
@@ -71,11 +70,14 @@ namespace quda
 
     if (pc_type != QUDA_4D_PC) { errorQuda("Gauge field copy must use 4d even-odd preconditioning."); }
 
-    if (in.V(true)) { instantiate<CopyCloverOffset>(out, in, offset, true); }
-    if (in.V(false)) { instantiate<CopyCloverOffset>(out, in, offset, false); }
-#else
-    errorQuda("Clover has not been built");
-#endif
+    if (in.Inverse()) instantiate<CopyCloverOffset>(out, in, offset, true);
+    instantiate<CopyCloverOffset>(out, in, offset, false);
   }
+#else
+  void copyFieldOffset(CloverField &, const CloverField &, CommKey, QudaPCType)
+  {
+    errorQuda("Clover has not been built");
+  }
+#endif
 
 } // namespace quda

@@ -12,9 +12,6 @@
 #include <util_quda.h>
 #include <string.h>
 
-#ifdef MAGMA_LIB 
-#include <blas_magma.h>
-#endif
 
 #include <eigen_helper.h>
 #include <deflation.h>
@@ -39,7 +36,7 @@ namespace quda {
 
    static int max_eigcg_cycles = 4;//how many eigcg cycles do we allow?
 
-   enum  class libtype {eigen_lib, magma_lib, lapack_lib, mkl_lib};
+   enum  class libtype {eigen_lib, lapack_lib, mkl_lib};
 
    class EigCGArgs
    {
@@ -133,7 +130,7 @@ namespace quda {
 
        std::vector<ColorSpinorField *> v_(v->Components().begin(), v->Components().begin() + 2 * k);
 
-       blas::cDotProduct(s.get(), w_, v_);
+       blas::legacy::cDotProduct(s.get(), w_, v_);
 
        Map<VectorXcd, Unaligned> s_(s.get(), 2 * k);
        s_ *= inv_sqrt_r2;
@@ -144,7 +141,7 @@ namespace quda {
    };
 
    //Rayleigh Ritz procedure:
-   template <libtype which_lib> void ComputeRitz(EigCGArgs &args) { errorQuda("\nUnknown library type."); }
+   template <libtype which_lib> void ComputeRitz(EigCGArgs &) { errorQuda("\nUnknown library type."); }
 
    //pure eigen version: 
    template <> void ComputeRitz<libtype::eigen_lib>(EigCGArgs &args)
@@ -174,52 +171,6 @@ namespace quda {
      return;
    }
 
-   //(supposed to be a pure) magma version: 
-   template <> void ComputeRitz<libtype::magma_lib>(EigCGArgs &args)
-   {
-#ifdef MAGMA_LIB
-     const int m = args.m;
-     const int k = args.k;
-     //Solve m dim eigenproblem:
-     args.ritzVecs = args.Tm;
-     Complex *evecm = static_cast<Complex*>( args.ritzVecs.data());
-     double  *evalm = static_cast<double *>( args.Tmvals.data());
-
-     cudaHostRegister(static_cast<void *>(evecm), m*m*sizeof(Complex),  cudaHostRegisterDefault);
-     magma_Xheev(evecm, m, m, evalm, sizeof(Complex));
-     //Solve m-1 dim eigenproblem:
-     DenseMatrix ritzVecsm1(args.Tm);
-     Complex *evecm1 = static_cast<Complex*>( ritzVecsm1.data());
-
-     cudaHostRegister(static_cast<void *>(evecm1), m*m*sizeof(Complex),  cudaHostRegisterDefault);
-     magma_Xheev(evecm1, (m-1), m, evalm, sizeof(Complex));
-     // fill 0s in mth element of old evecs:
-     for(int l = 1; l <= m ; l++) evecm1[l*m-1] = 0.0 ;
-     // Attach the first n_ev old evecs at the end of the n_ev latest ones:
-     memcpy(&evecm[k*m], evecm1, k*m*sizeof(Complex));
-     //?
-     // Orthogonalize the 2*n_ev (new+old) vectors evecm=QR:
-
-     MatrixXcd Q2k(MatrixXcd::Identity(m, 2*k));
-     HouseholderQR<MatrixXcd> ritzVecs2k_qr( Map<MatrixXcd, Unaligned >(args.ritzVecs.data(), m, 2*k) );
-     Q2k.applyOnTheLeft( ritzVecs2k_qr.householderQ() );
-
-     //2. Construct H = QH*Tm*Q :
-     args.H2k = Q2k.adjoint()*args.Tm*Q2k;
-
-     /* solve the small evecm1 2n_ev x 2n_ev eigenproblem */
-     SelfAdjointEigenSolver<MatrixXcd> es_h2k(args.H2k);
-     Block<MatrixXcd>(args.ritzVecs.derived(), 0, 0, m, 2*k) = Q2k * es_h2k.eigenvectors();
-     args.Tmvals.segment(0,2*k) = es_h2k.eigenvalues();//this is ok
-//?
-     cudaHostUnregister(evecm);
-     cudaHostUnregister(evecm1);
-#else
-     errorQuda("Magma library was not built.");
-#endif
-     return;
-  }
-
   // set the required parameters for the inner solver
   static void fillEigCGInnerSolverParam(SolverParam &inner, const SolverParam &outer, bool use_sloppy_partial_accumulator = true)
   {
@@ -228,27 +179,16 @@ namespace quda {
     inner.delta = 1e-20; // no reliable updates within the inner solver
     inner.precision = outer.precision_precondition; // preconditioners are uni-precision solvers
     inner.precision_sloppy = outer.precision_precondition;
-
     inner.iter   = 0;
-    inner.gflops = 0;
-    inner.secs   = 0;
-
     inner.inv_type_precondition = QUDA_INVALID_INVERTER;
     inner.is_preconditioner = true; // used to tell the inner solver it is an inner solver
 
     inner.use_sloppy_partial_accumulator= use_sloppy_partial_accumulator;
-
-    if(outer.inv_type == QUDA_EIGCG_INVERTER && outer.precision_sloppy != outer.precision_precondition)
-      inner.preserve_source = QUDA_PRESERVE_SOURCE_NO;
-    else inner.preserve_source = QUDA_PRESERVE_SOURCE_YES;
   }
 
   // set the required parameters for the initCG solver
   static void fillInitCGSolverParam(SolverParam &inner, const SolverParam &outer) {
     inner.iter   = 0;
-    inner.gflops = 0;
-    inner.secs   = 0;
-
     inner.tol              = outer.tol;
     inner.tol_restart      = outer.tol_restart;
     inner.maxiter          = outer.maxiter;
@@ -263,16 +203,14 @@ namespace quda {
   }
 
   IncEigCG::IncEigCG(const DiracMatrix &mat, const DiracMatrix &matSloppy, const DiracMatrix &matPrecon,
-                     SolverParam &param, TimeProfile &profile) :
-    Solver(mat, matSloppy, matPrecon, matPrecon, param, profile),
+                     SolverParam &param) :
+    Solver(mat, matSloppy, matPrecon, matPrecon, param),
     K(nullptr),
     Kparam(param),
     Vm(nullptr),
     r_pre(nullptr),
     p_pre(nullptr),
-    eigcg_args(nullptr),
-    profile(profile),
-    init(false)
+    eigcg_args(nullptr)
   {
 
     if (2 * param.n_ev >= param.m)
@@ -285,7 +223,7 @@ namespace quda {
     else {
       printfQuda("\nDeflation space is complete, running initCG solver.");
       fillInitCGSolverParam(Kparam, param);
-      //K = new CG(mat, matPrecon, Kparam, profile);//Preconditioned Mat has comms flag on
+      // K = new CG(mat, matPrecon, Kparam);//Preconditioned Mat has comms flag on
       return;
     }
 
@@ -298,11 +236,11 @@ namespace quda {
     }
 
     if(param.inv_type_precondition == QUDA_CG_INVERTER){
-      K = new CG(matPrecon, matPrecon, matPrecon, matPrecon, Kparam, profile);
+      K = new CG(matPrecon, matPrecon, matPrecon, matPrecon, Kparam);
     }else if(param.inv_type_precondition == QUDA_MR_INVERTER){
-      K = new MR(matPrecon, matPrecon, Kparam, profile);
+      K = new MR(matPrecon, matPrecon, Kparam);
     }else if(param.inv_type_precondition == QUDA_SD_INVERTER){
-      K = new SD(matPrecon, Kparam, profile);
+      K = new SD(matPrecon, Kparam);
     }else if(param.inv_type_precondition != QUDA_INVALID_INVERTER){ // unknown preconditioner
       errorQuda("Unknown inner solver %d", param.inv_type_precondition);
     }
@@ -315,7 +253,6 @@ namespace quda {
     {
       if(Vm)  delete Vm;
 
-      delete tmpp;
       delete rp;
       delete yp;
       delete Ap;
@@ -339,9 +276,7 @@ namespace quda {
   {
     EigCGArgs &args = *eigcg_args;
 
-    if ( param.extlib_type == QUDA_MAGMA_EXTLIB ) {
-      ComputeRitz<libtype::magma_lib>(args);
-    } else if( param.extlib_type == QUDA_EIGEN_EXTLIB ) {
+    if( param.extlib_type == QUDA_EIGEN_EXTLIB ) {
       ComputeRitz<libtype::eigen_lib>(args);//if args.m > 128, one may better use libtype::magma_lib
     } else {
       errorQuda("Library type %d is currently not supported.", param.extlib_type);
@@ -355,7 +290,7 @@ namespace quda {
     std::vector<ColorSpinorField*> v2k(args.V2k->Components());
 
     RowMajorDenseMatrix Alpha(args.ritzVecs.topLeftCorner(args.m, 2*args.k));
-    blas::caxpy( static_cast<Complex*>(Alpha.data()), vm , v2k);
+    blas::legacy::caxpy(static_cast<Complex *>(Alpha.data()), vm, v2k);
 
     for(int i = 0; i < 2*args.k; i++)  blas::copy(Vm->Component(i), args.V2k->Component(i));
 
@@ -400,18 +335,17 @@ namespace quda {
 /*
  * This is a solo precision solver.
 */
-  int IncEigCG::eigCGsolve(ColorSpinorField &x, ColorSpinorField &b) {
+  int IncEigCG::eigCGsolve(ColorSpinorField &x, const ColorSpinorField &b)
+  {
 
     int k=0;
 
-    if (checkLocation(x, b) != QUDA_CUDA_FIELD_LOCATION)  errorQuda("Not supported");
-
-    profile.TPSTART(QUDA_PROFILE_INIT);
+    getProfile().TPSTART(QUDA_PROFILE_INIT);
 
     // Check to see that we're not trying to invert on a zero-field source
     const double b2 = blas::norm2(b);
     if (b2 == 0) {
-      profile.TPSTOP(QUDA_PROFILE_INIT);
+      getProfile().TPSTOP(QUDA_PROFILE_INIT);
       printfQuda("Warning: inverting on zero-field source\n");
       x = b;
       param.true_res = 0.0;
@@ -425,14 +359,13 @@ namespace quda {
       eigcg_args = new EigCGArgs(param.m, param.n_ev); // need only deflation meta structure
 
       csParam.create = QUDA_COPY_FIELD_CREATE;
-      rp = ColorSpinorField::Create(b, csParam);
+      csParam.field = &const_cast<ColorSpinorField &>(b);
+      rp = ColorSpinorField::Create(csParam);
       csParam.create = QUDA_ZERO_FIELD_CREATE;
-      yp = ColorSpinorField::Create(b, csParam);
+      yp = ColorSpinorField::Create(csParam);
 
       Ap = ColorSpinorField::Create(csParam);
       p  = ColorSpinorField::Create(csParam);
-
-      tmpp = ColorSpinorField::Create(csParam);
 
       Az = ColorSpinorField::Create(csParam);
 
@@ -459,7 +392,7 @@ namespace quda {
     EigCGArgs &args = *eigcg_args;
 
     if(args.run_residual_correction && param.inv_type == QUDA_INC_EIGCG_INVERTER) {
-      profile.TPSTOP(QUDA_PROFILE_INIT);
+      getProfile().TPSTOP(QUDA_PROFILE_INIT);
       (*K)(x, b);
       return Kparam.iter; 
     }
@@ -475,13 +408,12 @@ namespace quda {
 //!
     ColorSpinorField &r = *rp;
     ColorSpinorField &y = *yp;
-    ColorSpinorField &tmp = *tmpp;
 
     csParam.setPrecision(param.precision_sloppy);
     csParam.is_composite  = false;
 
     // compute initial residual
-    matSloppy(r, x, y);
+    matSloppy(r, x);
     double r2 = blas::xmyNorm(b, r);
 
     ColorSpinorField *z  = (K != nullptr) ? ColorSpinorField::Create(csParam) : rp;//
@@ -493,9 +425,9 @@ namespace quda {
       ColorSpinorField &pPre = *p_pre;
 
       blas::copy(rPre, r);
-      commGlobalReductionSet(false);
+      commGlobalReductionPush(false);
       (*K)(pPre, rPre);
-      commGlobalReductionSet(true);
+      commGlobalReductionPop();
       blas::copy(*z, pPre);
     }
 
@@ -505,8 +437,8 @@ namespace quda {
     const bool use_heavy_quark_res =
       (param.residual_type & QUDA_HEAVY_QUARK_RESIDUAL) ? true : false;
 
-    profile.TPSTOP(QUDA_PROFILE_INIT);
-    profile.TPSTART(QUDA_PROFILE_PREAMBLE);
+    getProfile().TPSTOP(QUDA_PROFILE_INIT);
+    getProfile().TPSTART(QUDA_PROFILE_PREAMBLE);
 
     double heavy_quark_res = 0.0;  // heavy quark res idual
 
@@ -517,9 +449,8 @@ namespace quda {
 
     double lanczos_diag, lanczos_offdiag;
 
-    profile.TPSTOP(QUDA_PROFILE_PREAMBLE);
-    profile.TPSTART(QUDA_PROFILE_COMPUTE);
-    blas::flops = 0;
+    getProfile().TPSTOP(QUDA_PROFILE_PREAMBLE);
+    getProfile().TPSTART(QUDA_PROFILE_COMPUTE);
 
     double rMinvr = blas::reDotProduct(r,*z);
     //Begin EigCG iterations:
@@ -530,7 +461,7 @@ namespace quda {
     bool converged = convergence(r2, heavy_quark_res, args.global_stop, param.tol_hq);
 
     while ( !converged && k < param.maxiter ) {
-      matSloppy(*Ap, *p, tmp);  // tmp as tmp
+      matSloppy(*Ap, *p); // tmp as tmp
 
       pAp    = blas::reDotProduct(*p, *Ap);
       alpha_old_inv =  alpha_inv;
@@ -547,9 +478,9 @@ namespace quda {
         ColorSpinorField &pPre = *p_pre;
 
         blas::copy(rPre, r);
-        commGlobalReductionSet(false);
+        commGlobalReductionPush(false);
         (*K)(pPre, rPre);
-        commGlobalReductionSet(true);
+        commGlobalReductionPop();
         blas::copy(*z, pPre);
       }
       //
@@ -573,36 +504,30 @@ namespace quda {
 
     blas::xpy(y, x);
 
-    profile.TPSTOP(QUDA_PROFILE_COMPUTE);
-    profile.TPSTART(QUDA_PROFILE_EPILOGUE);
+    getProfile().TPSTOP(QUDA_PROFILE_COMPUTE);
+    getProfile().TPSTART(QUDA_PROFILE_EPILOGUE);
 
-    param.secs = profile.Last(QUDA_PROFILE_COMPUTE);
-    double gflops = (blas::flops + matSloppy.flops())*1e-9;
-    param.gflops = gflops;
     param.iter += k;
 
     if (k == param.maxiter)
       warningQuda("Exceeded maximum iterations %d", param.maxiter);
 
     // compute the true residuals
-    matSloppy(r, x, y);
+    matSloppy(r, x);
     param.true_res = sqrt(blas::xmyNorm(b, r) / b2);
     param.true_res_hq = sqrt(blas::HeavyQuarkResidualNorm(x, r).z);
 
     PrintSummary("eigCG", k, r2, b2, args.global_stop, param.tol_hq);
 
-    // reset the flops counters
-    blas::flops = 0;
-    matSloppy.flops();
+    getProfile().TPSTOP(QUDA_PROFILE_EPILOGUE);
+    getProfile().TPSTART(QUDA_PROFILE_FREE);
 
-    profile.TPSTOP(QUDA_PROFILE_EPILOGUE);
-    profile.TPSTART(QUDA_PROFILE_FREE);
-
-    profile.TPSTOP(QUDA_PROFILE_FREE);
+    getProfile().TPSTOP(QUDA_PROFILE_FREE);
     return k;
   }
 
-  int IncEigCG::initCGsolve(ColorSpinorField &x, ColorSpinorField &b) {
+  int IncEigCG::initCGsolve(ColorSpinorField &x, const ColorSpinorField &b)
+  {
     int k = 0;
     //Start init CG iterations:
     deflated_solver *defl_p = static_cast<deflated_solver*>(param.deflation_op);
@@ -615,8 +540,6 @@ namespace quda {
 
     csParam.create = QUDA_ZERO_FIELD_CREATE;
 
-    ColorSpinorField *tmpp2 = ColorSpinorField::Create(csParam);//full precision accumulator
-    ColorSpinorField &tmp2  = *tmpp2;
     ColorSpinorField *rp = ColorSpinorField::Create(csParam);//full precision residual
     ColorSpinorField &r = *rp;
 
@@ -639,34 +562,24 @@ namespace quda {
       defl(xProj, rProj);
       x = xProj;
 
-      K = new CG(mat, matPrecon, matPrecon, matPrecon, Kparam, profile);
+      K = new CG(mat, matPrecon, matPrecon, matPrecon, Kparam);
       (*K)(x, b);
       delete K;
 
-      mat(r, x, tmp2);
+      mat(r, x);
       blas::xpay(b, -1.0, r);
 
       xProj = x;
       rProj = r; 
 
-      if(getVerbosity() >= QUDA_VERBOSE) printfQuda("\ninitCG stat: %i iter / %g secs = %g Gflops. \n", Kparam.iter, Kparam.secs, Kparam.gflops);
-
       Kparam.tol *= param.inc_tol;
 
       if(restart_idx == (param.max_restart_num-1)) Kparam.tol = full_tol;//do the last solve in the next cycle to full tolerance
-
-      param.secs   += Kparam.secs;
     }
-
-    if(getVerbosity() >= QUDA_VERBOSE) printfQuda("\ninitCG stat: %i iter / %g secs = %g Gflops. \n", Kparam.iter, Kparam.secs, Kparam.gflops);
-    //
-    param.secs   += Kparam.secs;
-    param.gflops += Kparam.gflops;
 
     k   += Kparam.iter;
 
     delete rp;
-    delete tmpp2;
 
     if( param.precision_ritz != param.precision ) {
       delete xp_proj;
@@ -675,7 +588,7 @@ namespace quda {
     return k;
   }
 
-  void IncEigCG::operator()(ColorSpinorField &out, ColorSpinorField &in)
+  void IncEigCG::operator()(ColorSpinorField &out, const ColorSpinorField &in)
   {
      if(param.rhs_idx == 0) max_eigcg_cycles = param.eigcg_max_restarts;
 
@@ -706,7 +619,7 @@ namespace quda {
      ColorSpinorField &r = *rp;
 
      //deflate initial guess ('out'-field):
-     mat(r, out, e);
+     mat(r, out);
      //
      double r2 = xmyNorm(in, r);
 
@@ -731,7 +644,7 @@ namespace quda {
          if(!K) {
            Kparam.precision   = param.precision_sloppy;
            Kparam.tol         = 5*param.inc_tol;//former cg_iterref_tol param
-           K = new CG(matSloppy, matPrecon, matPrecon, matPrecon, Kparam, profile);
+           K = new CG(matSloppy, matPrecon, matPrecon, matPrecon, Kparam);
          }
 
          eigcg_args->run_residual_correction = true;      
@@ -758,7 +671,7 @@ namespace quda {
        blas::xpy(e, out);
        // compute the true residuals
        blas::zero(e);
-       mat(r, out, e);
+       mat(r, out);
        //
        r2 = blas::xmyNorm(in, r);
 

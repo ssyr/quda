@@ -56,19 +56,16 @@ namespace quda {
         tot_dim      = param.np;
         ld           = ((tot_dim+15) / 16) * tot_dim;
         //allocate deflation resources:
-        matProj      = new Complex[ld*tot_dim];
+        matProj = static_cast<Complex *>(pool_pinned_malloc(ld * tot_dim * sizeof(Complex)));
         invRitzVals  = new double[tot_dim];
 
         //Check that RV is a composite field:
         if(RV->IsComposite() == false) errorQuda("\nRitz vectors must be contained in a composite field.\n");
-
-        cudaHostRegister(matProj,ld*tot_dim*sizeof(Complex),cudaHostRegisterDefault);
      }
 
      ~DeflationParam(){
-        cudaHostUnregister(matProj);
-        if(matProj) delete[]  matProj;
-        if(invRitzVals)       delete[]  invRitzVals;
+       pool_pinned_free(matProj);
+       if (invRitzVals) delete[] invRitzVals;
      }
   };
 
@@ -139,18 +136,6 @@ namespace quda {
        @param in The input vector (or equivalently the right hand side vector)
      */
     void operator()(ColorSpinorField &out, ColorSpinorField &in);
-
-    /**
-       @brief Load the eigen space vectors from file
-       @param RV Loaded eigen-space vectors (pre-allocated)
-     */
-    void loadVectors(ColorSpinorField *RV);
-
-    /**
-       @brief Save the eigen space vectors in file
-       @param RV Save eigen-space vectors from here
-     */
-    void saveVectors(ColorSpinorField *RV);
 
     /**
        @brief Test whether the deflation space is complete

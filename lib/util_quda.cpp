@@ -8,6 +8,9 @@
 #include <enum_quda.h>
 #include <util_quda.h>
 #include <malloc_quda.h>
+#include <tune_quda.h>
+
+using namespace quda;
 
 static const size_t MAX_PREFIX_SIZE = 100;
 
@@ -41,29 +44,58 @@ bool getRankVerbosity() {
       if (rank_list.peek() == ',') rank_list.ignore();
     }
   } else if (!init) {
-    rank_verbosity = comm_rank_global() == 0 ? true : false; // default is process 0 only
+    rank_verbosity = comm_rank() == 0 ? true : false; // default is process 0 only
   }
   init = true;
 
   return rank_verbosity;
 }
 
-// default has autotuning enabled but can be overridden with the QUDA_ENABLE_TUNING environment variable
-QudaTune getTuning() {
-  static bool init = false;
-  static QudaTune tune = QUDA_TUNE_YES;
+static bool tune = true;
 
+// default has autotuning enabled but can be overridden with the QUDA_ENABLE_TUNING environment variable
+bool getTuning()
+{
+  static bool init = false;
   if (!init) {
     char *enable_tuning = getenv("QUDA_ENABLE_TUNING");
-    if (!enable_tuning || strcmp(enable_tuning,"0")!=0) {
-      tune = QUDA_TUNE_YES;
+    if (!enable_tuning || strcmp(enable_tuning, "0") != 0) {
+      tune = true;
     } else {
-      tune = QUDA_TUNE_NO;
+      tune = false;
     }
     init = true;
   }
 
   return tune;
+}
+
+void setTuning(bool tuning)
+{
+  // first check if tuning is disabled, in which case we do nothing
+  static bool init = false;
+  static bool tune_disable = false;
+  if (!init) {
+    char *enable_tuning = getenv("QUDA_ENABLE_TUNING");
+    tune_disable = (enable_tuning && strcmp(enable_tuning, "0") == 0);
+    init = true;
+  }
+  if (!tune_disable) tune = tuning;
+}
+
+static std::stack<bool> tstack;
+
+void pushTuning(bool tuning)
+{
+  tstack.push(getTuning());
+  setTuning(tuning);
+}
+
+void popTuning()
+{
+  if (tstack.empty()) errorQuda("popTuning() called with empty stack");
+  setTuning(tstack.top());
+  tstack.pop();
 }
 
 void setOutputPrefix(const char *prefix)
@@ -76,7 +108,6 @@ void setOutputFile(FILE *outfile)
 {
   outfile_ = outfile;
 }
-
 
 static std::stack<QudaVerbosity> vstack;
 
@@ -131,14 +162,50 @@ void popOutputPrefix()
 
 char *getPrintBuffer() { return buffer_; }
 
-char* getOmpThreadStr() {
-  static char omp_thread_string[128];
+const char *getOmpThreadStr()
+{
+  static std::string omp_thread_string;
   static bool init = false;
   if (!init) {
-    strcpy(omp_thread_string,",omp_threads=");
-    char *omp_threads = getenv("OMP_NUM_THREADS");
-    strcat(omp_thread_string, omp_threads ? omp_threads : "1");
+#ifdef QUDA_OPENMP
+    omp_thread_string = std::string("omp_threads=" + std::to_string(omp_get_max_threads()) + ",");
+#endif
     init = true;
   }
-  return omp_thread_string;
+  return omp_thread_string.c_str();
 }
+
+void errorQuda_(const char *func, const char *file, int line, ...)
+{
+  fprintf(getOutputFile(), " (rank %d, host %s, %s:%d in %s())\n", comm_rank_global(), comm_hostname(), file, line, func);
+  fprintf(getOutputFile(), "%s       last kernel called was (name=%s,volume=%s,aux=%s)\n", getOutputPrefix(),
+          quda::getLastTuneKey().name, quda::getLastTuneKey().volume, quda::getLastTuneKey().aux);
+  fflush(getOutputFile());
+  quda::saveTuneCache(true);
+  comm_abort(1);
+}
+
+namespace quda
+{
+
+  unsigned int get_max_multi_rhs()
+  {
+    static bool init = false;
+    static int max = MAX_MULTI_RHS;
+
+    if (!init) {
+      char *max_str = getenv("QUDA_MAX_MULTI_RHS");
+      if (max_str) {
+        max = atoi(max_str);
+        if (max <= 0) errorQuda("QUDA_MAX_MULTI_RHS=%d cannot be negative", max);
+        if (max > MAX_MULTI_RHS)
+          errorQuda("QUDA_MAX_MULTI_RHS=%d cannot be greater than CMake set value %u", max, MAX_MULTI_RHS);
+        printfQuda("QUDA_MAX_MULTI_RHS set to %d\n", max);
+      }
+      init = true;
+    }
+
+    return max;
+  }
+
+} // namespace quda

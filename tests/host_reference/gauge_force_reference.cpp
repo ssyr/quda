@@ -4,11 +4,10 @@
 #include <string.h>
 #include <type_traits>
 
-#include "quda.h"
-#include "gauge_field.h"
 #include "host_utils.h"
 #include "misc.h"
 #include "gauge_force_reference.h"
+#include "timer.h"
 
 extern int Z[4];
 extern int V;
@@ -32,6 +31,13 @@ extern int E[4];
     (a).imag += (b).imag;                                                                                              \
   }
 
+/* rescale by real scalar */
+#define CSCALE(a, b)                                                                                                   \
+  {                                                                                                                    \
+    (a).real *= b;                                                                                                     \
+    (a).imag *= b;                                                                                                     \
+  }
+
 /* c = a* * b */
 #define CMULJ_(a, b, c)                                                                                                \
   {                                                                                                                    \
@@ -52,41 +58,66 @@ extern int E[4];
     (b).imag = -(a).imag;                                                                                              \
   }
 
-typedef struct {
+struct fcomplex {
   float real;
   float imag;
-} fcomplex;
+};
 
 /* specific for double complex */
-typedef struct {
+struct dcomplex {
   double real;
   double imag;
-} dcomplex;
 
-typedef struct {
+  void operator+=(const dcomplex &other)
+  {
+    real += other.real;
+    imag += other.imag;
+  }
+};
+
+#pragma omp declare reduction(dcomplex_sum:dcomplex : omp_out += omp_in)
+
+struct fsu3_matrix {
+  using real_t = float;
+  using complex_t = fcomplex;
   fcomplex e[3][3];
-} fsu3_matrix;
-typedef struct {
-  fcomplex c[3];
-} fsu3_vector;
-typedef struct {
-  dcomplex e[3][3];
-} dsu3_matrix;
-typedef struct {
-  dcomplex c[3];
-} dsu3_vector;
+};
 
-typedef struct {
+struct fsu3_vector {
+  using real_t = float;
+  using complex_t = fcomplex;
+  fcomplex c[3];
+};
+
+struct dsu3_matrix {
+  using real_t = double;
+  using complex_t = dcomplex;
+  dcomplex e[3][3];
+};
+
+struct dsu3_vector {
+  using real_t = double;
+  using complex_t = dcomplex;
+  dcomplex c[3];
+};
+
+struct fanti_hermitmat {
+  using real_t = float;
+  using complex_t = fcomplex;
   fcomplex m01, m02, m12;
   float m00im, m11im, m22im;
   float space;
-} fanti_hermitmat;
+};
 
-typedef struct {
+struct danti_hermitmat {
+  using real_t = double;
+  using complex_t = dcomplex;
   dcomplex m01, m02, m12;
   double m00im, m11im, m22im;
   double space;
-} danti_hermitmat;
+};
+
+
 
 extern int neighborIndexFullLattice(int i, int dx4, int dx3, int dx2, int dx1);
 
@@ -114,7 +145,8 @@ template <typename su3_matrix, typename anti_hermitmat> void make_anti_hermitian
 template <typename anti_hermitmat, typename su3_matrix>
 static void uncompress_anti_hermitian(anti_hermitmat *mat_antihermit, su3_matrix *mat_su3)
 {
-  typename std::remove_reference<decltype(mat_antihermit->m00im)>::type temp1;
+  typename anti_hermitmat::real_t temp1;
+  // typename std::remove_reference<decltype(mat_antihermit->m00im)>::type temp1;
   mat_su3->e[0][0].imag = mat_antihermit->m00im;
   mat_su3->e[0][0].real = 0.;
   mat_su3->e[1][1].imag = mat_antihermit->m11im;
@@ -205,6 +237,24 @@ template <typename su3_matrix> static void mult_su3_na(su3_matrix *a, su3_matrix
   }
 }
 
+template <typename su3_matrix, typename Float> static void add_su3(su3_matrix *a, su3_matrix *b, Float eb3)
+{
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      b->e[i][j].real += eb3 * a->e[i][j].real;
+      b->e[i][j].imag += eb3 * a->e[i][j].imag;
+    }
+  }
+}
+
+template <typename su3_matrix> static typename su3_matrix::complex_t trace_su3(su3_matrix *a)
+{
+  typename su3_matrix::complex_t tmp;
+  CADD(a->e[0][0], a->e[1][1], tmp);
+  CADD(a->e[2][2], tmp, tmp);
+  return tmp;
+}
+
 template <typename su3_matrix> void print_su3_matrix(su3_matrix *a)
 {
   for (int i = 0; i < 3; i++) {
@@ -213,117 +263,132 @@ template <typename su3_matrix> void print_su3_matrix(su3_matrix *a)
   }
 }
 
-int gf_neighborIndexFullLattice(int i, int dx4, int dx3, int dx2, int dx1)
+int gf_neighborIndexFullLattice(size_t i, int dx[], const lattice_t &lat)
 {
   int oddBit = 0;
-  int half_idx = i;
-  if (i >= Vh) {
+  int x[4];
+  auto half_idx = i;
+  if (i >= lat.volume / 2) {
     oddBit = 1;
-    half_idx = i - Vh;
+    half_idx = i - lat.volume / 2;
   }
-  int X1 = Z[0];
-  int X2 = Z[1];
-  int X3 = Z[2];
-  // int X4 = Z[3];
-  int X1h = X1 / 2;
 
-  int za = half_idx / X1h;
-  int x1h = half_idx - za * X1h;
-  int zb = za / X2;
-  int x2 = za - zb * X2;
-  int x4 = zb / X3;
-  int x3 = zb - x4 * X3;
-  int x1odd = (x2 + x3 + x4 + oddBit) & 1;
-  int x1 = 2 * x1h + x1odd;
+  auto za = half_idx / (lat.x[0] / 2);
+  auto x0h = half_idx - za * (lat.x[0] / 2);
+  auto zb = za / lat.x[1];
+  x[1] = za - zb * lat.x[1];
+  x[3] = zb / lat.x[2];
+  x[2] = zb - x[3] * lat.x[2];
+  auto x1odd = (x[1] + x[2] + x[3] + oddBit) & 1;
+  x[0] = 2 * x0h + x1odd;
 
-#ifdef MULTI_GPU
-  x4 = x4 + dx4;
-  x3 = x3 + dx3;
-  x2 = x2 + dx2;
-  x1 = x1 + dx1;
+  for (int d = 0; d < 4; d++) {
+    x[d] = quda::comm_dim_partitioned(d) ? x[d] + dx[d] : (x[d] + dx[d] + lat.x[d]) % lat.x[d];
+  }
+  size_t nbr_half_idx = ((x[3] + lat.r[3]) * (lat.e[2] * lat.e[1] * lat.e[0]) + (x[2] + lat.r[2]) * (lat.e[1] * lat.e[0])
+                         + (x[1] + lat.r[1]) * (lat.e[0]) + (x[0] + lat.r[0]))
+    / 2;
 
-  int nbr_half_idx = ((x4 + 2) * (E[2] * E[1] * E[0]) + (x3 + 2) * (E[1] * E[0]) + (x2 + 2) * (E[0]) + (x1 + 2)) / 2;
-#else
-  x4 = (x4 + dx4 + Z[3]) % Z[3];
-  x3 = (x3 + dx3 + Z[2]) % Z[2];
-  x2 = (x2 + dx2 + Z[1]) % Z[1];
-  x1 = (x1 + dx1 + Z[0]) % Z[0];
-
-  int nbr_half_idx = (x4 * (Z[2] * Z[1] * Z[0]) + x3 * (Z[1] * Z[0]) + x2 * (Z[0]) + x1) / 2;
-#endif
-
-  int oddBitChanged = (dx4 + dx3 + dx2 + dx1) % 2;
+  int oddBitChanged = (dx[3] + dx[2] + dx[1] + dx[0]) % 2;
   if (oddBitChanged) { oddBit = 1 - oddBit; }
   int ret = nbr_half_idx;
-  if (oddBit) {
-#ifdef MULTI_GPU
-    ret = Vh_ex + nbr_half_idx;
-#else
-    ret = Vh + nbr_half_idx;
-#endif
-  }
+  if (oddBit) ret += lat.volume_ex / 2;
 
   return ret;
 }
 
-// this functon compute one path for all lattice sites
-template <typename su3_matrix, typename Float>
-static void compute_path_product(su3_matrix *staple, su3_matrix **sitelink, su3_matrix **sitelink_ex_2d, int *path,
-                                 int len, Float loop_coeff, int dir)
+/**
+   @brief Calculates an arbitary gauge path, returning the product matrix
+   @return The product of the gauge path
+   @param[in] sitelink Gauge link structure
+   @param[in] i Full lattice index of origin
+   @param[in] path Gauge link path
+   @param[in] length Length of gauge path
+   @param[in] dx Memory for a relative coordinate shift; can be non-zero
+   @param[in] lat Utility lattice information
+*/
+template <typename su3_matrix>
+static su3_matrix compute_gauge_path(su3_matrix **sitelink, int i, int *path, int len, int dx[4], const lattice_t &lat)
 {
-  su3_matrix prev_matrix, curr_matrix, tmat;
-  int dx[4];
+  su3_matrix prev_matrix, curr_matrix = {};
 
-  for (int i = 0; i < V; i++) {
-    memset(dx, 0, sizeof(dx));
-    memset(&curr_matrix, 0, sizeof(curr_matrix));
+  curr_matrix.e[0][0].real = 1;
+  curr_matrix.e[1][1].real = 1;
+  curr_matrix.e[2][2].real = 1;
 
-    curr_matrix.e[0][0].real = 1.0;
-    curr_matrix.e[1][1].real = 1.0;
-    curr_matrix.e[2][2].real = 1.0;
+  for (int j = 0; j < len; j++) {
+    int lnkdir;
 
+    prev_matrix = curr_matrix;
+    if (GOES_FORWARDS(path[j])) {
+      // dx[path[j]] +=1;
+      lnkdir = path[j];
+    } else {
+      dx[OPP_DIR(path[j])] -= 1;
+      lnkdir = OPP_DIR(path[j]);
+    }
+
+    int nbr_idx = gf_neighborIndexFullLattice(i, dx, lat);
+    su3_matrix *lnk = sitelink[lnkdir] + nbr_idx;
+
+    if (GOES_FORWARDS(path[j])) {
+      mult_su3_nn(&prev_matrix, lnk, &curr_matrix);
+    } else {
+      mult_su3_na(&prev_matrix, lnk, &curr_matrix);
+    }
+
+    if (GOES_FORWARDS(path[j])) {
+      dx[path[j]] += 1;
+    } else {
+      // we already subtract one in the code above
+    }
+  } // j
+
+  return curr_matrix;
+}
+
+// this function compute one path for all lattice sites
+template <typename su3_matrix, typename Float>
+static void compute_path_product(su3_matrix *staple, su3_matrix **sitelink, int *path, int len, Float loop_coeff,
+                                 int dir, const lattice_t &lat)
+{
+#pragma omp parallel for
+  for (size_t i = 0; i < lat.volume; i++) {
+    int dx[4] = {};
     dx[dir] = 1;
-    for (int j = 0; j < len; j++) {
-      int lnkdir;
 
-      prev_matrix = curr_matrix;
-      if (GOES_FORWARDS(path[j])) {
-        // dx[path[j]] +=1;
-        lnkdir = path[j];
-      } else {
-        dx[OPP_DIR(path[j])] -= 1;
-        lnkdir = OPP_DIR(path[j]);
-      }
+    su3_matrix curr_matrix = compute_gauge_path(sitelink, i, path, len, dx, lat);
 
-      int nbr_idx = gf_neighborIndexFullLattice(i, dx[3], dx[2], dx[1], dx[0]);
-#ifdef MULTI_GPU
-      su3_matrix *lnk = sitelink_ex_2d[lnkdir] + nbr_idx;
-#else
-      su3_matrix *lnk = sitelink[lnkdir] + nbr_idx;
-#endif
-      if (GOES_FORWARDS(path[j])) {
-        mult_su3_nn(&prev_matrix, lnk, &curr_matrix);
-      } else {
-        mult_su3_na(&prev_matrix, lnk, &curr_matrix);
-      }
-
-      if (GOES_FORWARDS(path[j])) {
-        dx[path[j]] += 1;
-      } else {
-        // we already substract one in the code above
-      }
-
-    } // j
-
+    su3_matrix tmat;
     su3_adjoint(&curr_matrix, &tmat);
     scalar_mult_add_su3_matrix(staple + i, &tmat, loop_coeff, staple + i);
   } // i
 }
 
-template <typename su3_matrix, typename anti_hermitmat, typename Float>
-static void update_mom(anti_hermitmat *momentum, int dir, su3_matrix **sitelink, su3_matrix *staple, Float eb3)
+template <typename su3_matrix>
+static dcomplex compute_loop_trace(su3_matrix **sitelink, int *path, int len, double loop_coeff, const lattice_t &lat)
 {
-  for (int i = 0; i < V; i++) {
+  dcomplex accum = {};
+
+#pragma omp parallel for reduction(dcomplex_sum : accum)
+  for (size_t i = 0; i < lat.volume; i++) {
+    int dx[4] = {};
+    su3_matrix tmat = compute_gauge_path(sitelink, i, path, len, dx, lat);
+    auto tr = trace_su3(&tmat);
+    accum += dcomplex {tr.real, tr.imag};
+  }
+
+  CSCALE(accum, loop_coeff);
+
+  return accum;
+};
+
+template <typename su3_matrix, typename anti_hermitmat, typename Float>
+static void update_mom(anti_hermitmat *momentum, int dir, su3_matrix **sitelink, su3_matrix *staple, Float eb3,
+                       const lattice_t &lat)
+{
+#pragma omp parallel for
+  for (size_t i = 0; i < lat.volume; i++) {
     su3_matrix tmat1;
     su3_matrix tmat2;
     su3_matrix tmat3;
@@ -340,60 +405,121 @@ static void update_mom(anti_hermitmat *momentum, int dir, su3_matrix **sitelink,
   }
 }
 
+template <typename su3_matrix, typename Float>
+static void update_gauge(su3_matrix *gauge, int dir, su3_matrix **sitelink, su3_matrix *staple, Float eb3,
+                         const lattice_t &lat)
+{
+#pragma omp parallel for
+  for (size_t i = 0; i < lat.volume; i++) {
+    su3_matrix tmat;
+
+    su3_matrix *lnk = sitelink[dir] + i;
+    su3_matrix *stp = staple + i;
+    su3_matrix *out = gauge + 4 * i + dir;
+
+    mult_su3_na(lnk, stp, &tmat);
+
+    add_su3(&tmat, out, eb3);
+  }
+}
+
 /* This function only computes one direction @dir
  *
  */
-void gauge_force_reference_dir(void *refMom, int dir, double eb3, void **sitelink, void **sitelink_ex_2d,
-                               QudaPrecision prec, int **path_dir, int *length, void *loop_coeff, int num_paths)
+void gauge_force_reference_dir(void *refMom, int dir, double eb3, quda::GaugeField &u, quda::GaugeField &u_ex,
+                               QudaPrecision prec, int **path_dir, int *length, void *loop_coeff, int num_paths,
+                               const lattice_t &lat, bool compute_force)
 {
-  void *staple;
-  int gSize = prec;
-
-  staple = malloc(V * gauge_site_size * gSize);
-  if (staple == NULL) {
-    fprintf(stderr, "ERROR: malloc failed for staple in functon %s\n", __FUNCTION__);
-    exit(1);
-  }
-
-  memset(staple, 0, V * gauge_site_size * gSize);
+  size_t size = size_t(V) * 2 * lat.n_color * lat.n_color * prec;
+  void *staple = safe_malloc(size);
+  memset(staple, 0, size);
 
   for (int i = 0; i < num_paths; i++) {
     if (prec == QUDA_DOUBLE_PRECISION) {
       double *my_loop_coeff = (double *)loop_coeff;
-      compute_path_product((dsu3_matrix *)staple, (dsu3_matrix **)sitelink, (dsu3_matrix **)sitelink_ex_2d, path_dir[i],
-                           length[i], my_loop_coeff[i], dir);
+      compute_path_product((dsu3_matrix *)staple, u_ex.data_array<dsu3_matrix *>().data, path_dir[i], length[i],
+                           my_loop_coeff[i], dir, lat);
     } else {
       float *my_loop_coeff = (float *)loop_coeff;
-      compute_path_product((fsu3_matrix *)staple, (fsu3_matrix **)sitelink, (fsu3_matrix **)sitelink_ex_2d, path_dir[i],
-                           length[i], my_loop_coeff[i], dir);
+      compute_path_product((fsu3_matrix *)staple, u_ex.data_array<fsu3_matrix *>().data, path_dir[i], length[i],
+                           my_loop_coeff[i], dir, lat);
     }
   }
 
-  if (prec == QUDA_DOUBLE_PRECISION) {
-    update_mom((danti_hermitmat *)refMom, dir, (dsu3_matrix **)sitelink, (dsu3_matrix *)staple, (double)eb3);
+  if (compute_force) {
+    if (prec == QUDA_DOUBLE_PRECISION) {
+      update_mom((danti_hermitmat *)refMom, dir, u.data_array<dsu3_matrix *>().data, (dsu3_matrix *)staple, (double)eb3,
+                 lat);
+    } else {
+      update_mom((fanti_hermitmat *)refMom, dir, u.data_array<fsu3_matrix *>().data, (fsu3_matrix *)staple, (float)eb3,
+                 lat);
+    }
   } else {
-    update_mom((fanti_hermitmat *)refMom, dir, (fsu3_matrix **)sitelink, (fsu3_matrix *)staple, (float)eb3);
+    if (prec == QUDA_DOUBLE_PRECISION) {
+      update_gauge((dsu3_matrix *)refMom, dir, u.data_array<dsu3_matrix *>().data, (dsu3_matrix *)staple, (double)eb3,
+                   lat);
+    } else {
+      update_gauge((fsu3_matrix *)refMom, dir, u.data_array<fsu3_matrix *>().data, (fsu3_matrix *)staple, (float)eb3,
+                   lat);
+    }
   }
-
-  free(staple);
+  host_free(staple);
 }
 
-void gauge_force_reference(void *refMom, double eb3, void **sitelink, QudaPrecision prec, int ***path_dir, int *length,
-                           void *loop_coeff, int num_paths)
+void gauge_force_reference(void *refMom, double eb3, quda::GaugeField &u, int ***path_dir, int *length,
+                           void *loop_coeff, int num_paths, bool compute_force)
 {
   // created extended field
-  int R[] = {2, 2, 2, 2};
+  quda::lat_dim_t R;
+  for (int d = 0; d < 4; d++) R[d] = 2 * quda::comm_dim_partitioned(d);
   QudaGaugeParam param = newQudaGaugeParam();
   setGaugeParam(param);
   param.gauge_order = QUDA_QDP_GAUGE_ORDER;
   param.t_boundary = QUDA_PERIODIC_T;
 
-  auto qdp_ex = quda::createExtendedGauge((void **)sitelink, param, R);
+  auto qdp_ex = quda::createExtendedGauge(u.data_array().data, param, R);
+  lattice_t lat(*qdp_ex);
 
   for (int dir = 0; dir < 4; dir++) {
-    gauge_force_reference_dir(refMom, dir, eb3, sitelink, (void **)qdp_ex->Gauge_p(), prec, path_dir[dir], length,
-                              loop_coeff, num_paths);
+    gauge_force_reference_dir(refMom, dir, eb3, u, *qdp_ex, u.Precision(), path_dir[dir], length, loop_coeff, num_paths,
+                              lat, compute_force);
   }
+
+  delete qdp_ex;
+}
+
+void gauge_loop_trace_reference(quda::GaugeField &u, std::vector<quda::Complex> &loop_traces, double factor,
+                                int **input_path, int *length, double *path_coeff, int num_paths)
+{
+  // create extended field
+  quda::lat_dim_t R;
+  for (int d = 0; d < 4; d++) R[d] = 2 * quda::comm_dim_partitioned(d);
+  QudaGaugeParam param = newQudaGaugeParam();
+  setGaugeParam(param);
+  param.gauge_order = QUDA_QDP_GAUGE_ORDER;
+  param.t_boundary = QUDA_PERIODIC_T;
+  auto qdp_ex = quda::createExtendedGauge(u.data_array().data, param, R);
+  lattice_t lat(*qdp_ex);
+
+  std::vector<double> loop_tr_dbl(2 * num_paths);
+
+  for (int i = 0; i < num_paths; i++) {
+    if (u.Precision() == QUDA_DOUBLE_PRECISION) {
+      dcomplex tr
+        = compute_loop_trace(qdp_ex->data_array<dsu3_matrix *>().data, input_path[i], length[i], path_coeff[i], lat);
+      loop_tr_dbl[2 * i] = factor * tr.real;
+      loop_tr_dbl[2 * i + 1] = factor * tr.imag;
+    } else {
+      dcomplex tr
+        = compute_loop_trace(qdp_ex->data_array<fsu3_matrix *>().data, input_path[i], length[i], path_coeff[i], lat);
+      loop_tr_dbl[2 * i] = factor * tr.real;
+      loop_tr_dbl[2 * i + 1] = factor * tr.imag;
+    }
+  }
+
+  quda::comm_allreduce_sum(loop_tr_dbl);
+
+  for (int i = 0; i < num_paths; i++) loop_traces[i] = quda::Complex(loop_tr_dbl[2 * i], loop_tr_dbl[2 * i + 1]);
 
   delete qdp_ex;
 }

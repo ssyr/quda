@@ -1,3 +1,4 @@
+#include <timer.h>
 #include <blas_lapack.h>
 #include <eigen_helper.h>
 
@@ -58,7 +59,7 @@ namespace quda
         size_t size = 2 * n * n * batch * prec;
         void *A_h = (location == QUDA_CUDA_FIELD_LOCATION ? pool_pinned_malloc(size) : A);
         void *Ainv_h = (location == QUDA_CUDA_FIELD_LOCATION ? pool_pinned_malloc(size) : Ainv);
-        if (location == QUDA_CUDA_FIELD_LOCATION) { qudaMemcpy(A_h, A, size, cudaMemcpyDeviceToHost); }
+        if (location == QUDA_CUDA_FIELD_LOCATION) { qudaMemcpy(A_h, A, size, qudaMemcpyDeviceToHost); }
 
         long long flops = 0;
         timeval start, stop;
@@ -103,7 +104,7 @@ namespace quda
         if (location == QUDA_CUDA_FIELD_LOCATION) {
           pool_pinned_free(Ainv_h);
           pool_pinned_free(A_h);
-          qudaMemcpy((void *)Ainv, Ainv_h, size, cudaMemcpyHostToDevice);
+          qudaMemcpy((void *)Ainv, Ainv_h, size, qudaMemcpyHostToDevice);
         }
 
         return flops;
@@ -322,9 +323,9 @@ namespace quda
         void *B_h = location == QUDA_CPU_FIELD_LOCATION ? B_data : pool_pinned_malloc(sizeBarr);
         void *C_h = location == QUDA_CPU_FIELD_LOCATION ? C_data : pool_pinned_malloc(sizeCarr);
         if (location == QUDA_CUDA_FIELD_LOCATION) {
-          qudaMemcpy(A_h, A_data, sizeAarr, cudaMemcpyDeviceToHost);
-          qudaMemcpy(B_h, B_data, sizeBarr, cudaMemcpyDeviceToHost);
-          qudaMemcpy(C_h, C_data, sizeCarr, cudaMemcpyDeviceToHost);
+          qudaMemcpy(A_h, A_data, sizeAarr, qudaMemcpyDeviceToHost);
+          qudaMemcpy(B_h, B_data, sizeBarr, qudaMemcpyDeviceToHost);
+          qudaMemcpy(C_h, C_data, sizeCarr, qudaMemcpyDeviceToHost);
         }
 
         if (blas_param.data_type == QUDA_BLAS_DATATYPE_Z) {
@@ -333,6 +334,7 @@ namespace quda
           const Z alpha = blas_param.alpha;
           const Z beta = blas_param.beta;
           GEMM<MatrixXcd, Z>(A_h, B_h, C_h, alpha, beta, max_stride, blas_param);
+          flops += batch * FLOPS_CGEMM(blas_param.m, blas_param.n, blas_param.k);
 
         } else if (blas_param.data_type == QUDA_BLAS_DATATYPE_C) {
 
@@ -340,6 +342,7 @@ namespace quda
           const C alpha = blas_param.alpha;
           const C beta = blas_param.beta;
           GEMM<MatrixXcf, C>(A_h, B_h, C_h, alpha, beta, max_stride, blas_param);
+          flops += batch * FLOPS_CGEMM(blas_param.m, blas_param.n, blas_param.k);
 
         } else if (blas_param.data_type == QUDA_BLAS_DATATYPE_D) {
 
@@ -347,6 +350,7 @@ namespace quda
           const D alpha = (D)(static_cast<std::complex<double>>(blas_param.alpha).real());
           const D beta = (D)(static_cast<std::complex<double>>(blas_param.beta).real());
           GEMM<MatrixXd, D>(A_h, B_h, C_h, alpha, beta, max_stride, blas_param);
+          flops += batch * FLOPS_SGEMM(blas_param.m, blas_param.n, blas_param.k);
 
         } else if (blas_param.data_type == QUDA_BLAS_DATATYPE_S) {
 
@@ -354,6 +358,7 @@ namespace quda
           const S alpha = (S)(static_cast<std::complex<float>>(blas_param.alpha).real());
           const S beta = (S)(static_cast<std::complex<float>>(blas_param.beta).real());
           GEMM<MatrixXf, S>(A_h, B_h, C_h, alpha, beta, max_stride, blas_param);
+          flops += batch * FLOPS_SGEMM(blas_param.m, blas_param.n, blas_param.k);
 
         } else {
           errorQuda("blasGEMM type %d not implemented\n", blas_param.data_type);
@@ -371,7 +376,7 @@ namespace quda
 
         // Transfer data
         if (location == QUDA_CUDA_FIELD_LOCATION) {
-          qudaMemcpy(C_data, C_h, sizeCarr, cudaMemcpyHostToDevice);
+          qudaMemcpy(C_data, C_h, sizeCarr, qudaMemcpyHostToDevice);
           pool_pinned_free(A_h);
           pool_pinned_free(B_h);
           pool_pinned_free(C_h);

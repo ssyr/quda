@@ -1,6 +1,12 @@
 #pragma once
 
 #include <color_spinor_field.h>
+#include <load_store.h>
+#include <convert.h>
+#include <float_vector.h>
+#include <array.h>
+#include <math_helper.cuh>
+#include "instantiate.h"
 
 //#define QUAD_SUM
 #ifdef QUAD_SUM
@@ -62,70 +68,142 @@ namespace quda
 
   // Vector types used for AoS load-store on CPU
   template <> struct VectorType<double, 24> {
-    using type = vector_type<double, 24>;
+    using type = array<double, 24>;
   };
   template <> struct VectorType<float, 24> {
-    using type = vector_type<float, 24>;
+    using type = array<float, 24>;
   };
   template <> struct VectorType<short, 24> {
-    using type = vector_type<short, 24>;
+    using type = array<short, 24>;
   };
   template <> struct VectorType<int8_t, 24> {
-    using type = vector_type<int8_t, 24>;
+    using type = array<int8_t, 24>;
   };
   template <> struct VectorType<double, 6> {
-    using type = vector_type<double, 6>;
+    using type = array<double, 6>;
   };
   template <> struct VectorType<float, 6> {
-    using type = vector_type<float, 6>;
+    using type = array<float, 6>;
   };
   template <> struct VectorType<short, 6> {
-    using type = vector_type<short, 6>;
+    using type = array<short, 6>;
   };
   template <> struct VectorType<int8_t, 6> {
-    using type = vector_type<int8_t, 6>;
+    using type = array<int8_t, 6>;
   };
 
   namespace blas
   {
 
-    template <typename store_t, bool is_fixed> struct SpinorNorm {
+    /**
+       Helper struct that contains the meta data required for
+       read and writing to a spinor field in the BLAS kernels.
+       @tparam store_t Type used to store field in memory
+       @tparam N Length of vector
+    */
+    template <typename store_t, int N, bool is_fixed> struct data_t {
+      store_t *spinor;
+      int stride;
+      unsigned int cb_offset;
+      data_t() :
+        spinor(nullptr),
+        stride(0),
+        cb_offset(0)
+      {}
+
+      data_t(const ColorSpinorField &x) :
+        spinor(x.data<store_t *>()), stride(x.VolumeCB()), cb_offset(x.Bytes() / (2 * sizeof(store_t) * N))
+      {}
+    };
+
+    /**
+       Helper struct that contains the meta data required for read and
+       writing to a spinor field in the BLAS kernels.  This is a
+       specialized variant for fixed-point fields where need to store
+       the meta data for the norm field.
+       @tparam store_t Type used to store field in memory
+       @tparam N Length of vector
+    */
+    template <typename store_t, int N> struct data_t<store_t, N, true> {
       using norm_t = float;
+      store_t *spinor;
       norm_t *norm;
+      int stride;
+      unsigned int cb_offset;
       unsigned int cb_norm_offset;
+      data_t() :
+        spinor(nullptr),
+        norm(nullptr),
+        stride(0),
+        cb_offset(0),
+        cb_norm_offset(0)
+      {}
 
-      SpinorNorm() : norm(nullptr), cb_norm_offset(0) {}
+      data_t(const ColorSpinorField &x) :
+        spinor(x.data<store_t *>()),
+        norm(static_cast<norm_t *>(x.Norm())),
+        stride(x.VolumeCB()),
+        cb_offset(x.Bytes() / (2 * sizeof(store_t) * N)),
+        cb_norm_offset(x.Bytes() / (2 * sizeof(norm_t)))
+      {}
+    };
 
-      SpinorNorm(const ColorSpinorField &x) :
-        norm((norm_t *)x.Norm()),
-        cb_norm_offset(x.NormBytes() / (2 * sizeof(norm_t)))
+    /**
+       Specialized accessor struct for the BLAS kernels.
+       @tparam store_t Type used to store field in memory
+       @tparam N Length of vector
+    */
+    template <typename store_t, int N> struct Spinor {
+      using Vector = typename VectorType<store_t, N>::type;
+      using norm_t = float;
+      data_t<store_t, N, isFixed<store_t>::value> data;
+
+      Spinor() {}
+
+      Spinor(const ColorSpinorField &x) : data(x) {}
+
+      /**
+         @brief Dummy implementation of load_norm for non-fixed-point fields
+         @tparam is_fixed Whether fixed point
+      */
+      template <bool is_fixed>
+      __device__ __host__ inline std::enable_if_t<!is_fixed, norm_t> load_norm(const int, const int = 0) const { return 1.0; }
+
+      /**
+         @brief Implementation of load_norm for fixed-point fields
+         @tparam is_fixed Whether fixed point
+         @param[in] i checkerboard site index
+         @param[in] parity site parity
+      */
+      template <bool is_fixed>
+      __device__ __host__ inline std::enable_if_t<is_fixed, norm_t> load_norm(const int x, const int parity = 0) const
       {
+        return data.norm[data.cb_norm_offset * parity + x];
       }
 
-      SpinorNorm(const SpinorNorm &sn) : norm(sn.norm), cb_norm_offset(sn.cb_norm_offset) {}
-
-      SpinorNorm &operator=(const SpinorNorm &src)
+      /**
+         @brief Dummy implementation of store_norm for non fixed-point fields
+         @tparam is_fixed Whether fixed point
+         @tparam real Precision of vector we wish to store from
+         @tparam n Complex vector length
+      */
+      template <bool is_fixed, typename real, int n>
+      __device__ __host__ inline std::enable_if_t<!is_fixed, norm_t> store_norm(const array<complex<real>, n> &, norm_t &) const
       {
-        if (&src != this) {
-          norm = src.norm;
-          cb_norm_offset = src.cb_norm_offset;
-        }
-        return *this;
+        return 1.0;
       }
 
-      void set(const ColorSpinorField &x)
-      {
-        norm = (norm_t *)x.Norm();
-        cb_norm_offset = x.NormBytes() / (2 * sizeof(norm_t));
-      }
-
-      __device__ __host__ inline norm_t load_norm(const int i, const int parity = 0) const
-      {
-        return norm[cb_norm_offset * parity + i];
-      }
-
-      template <typename real, int n>
-      __device__ __host__ inline norm_t store_norm(const vector_type<complex<real>, n> &v, int x, int parity)
+      /**
+         @brief Implementation of store_norm for fixed-point fields
+         @tparam is_fixed Whether fixed point
+         @tparam real Precision of vector we wish to store from
+         @tparam n Complex vector length
+         @param[in] v elements we wish to find the max abs of for storing
+         @param[in] norm The norm we are 
+         @return The scale factor to be applied when packing into fixed point
+      */
+      template <bool is_fixed, typename real, int n>
+      __device__ __host__ inline std::enable_if_t<is_fixed, norm_t> store_norm(const array<complex<real>, n> &v, norm_t &norm) const
       {
         norm_t max_[n];
         // two-pass to increase ILP (assumes length divisible by two, e.g. complex-valued)
@@ -134,137 +212,133 @@ namespace quda
         norm_t scale = 0.0;
 #pragma unroll
         for (int i = 0; i < n; i++) scale = fmaxf(max_[i], scale);
-        norm[x + parity * cb_norm_offset] = scale;
-
-#ifdef __CUDA_ARCH__
-        return __fdividef(fixedMaxValue<store_t>::value, scale);
-#else
-        return fixedMaxValue<store_t>::value / scale;
-#endif
+        norm = scale * fixedInvMaxValue<store_t>::value;
+        return fdividef(fixedMaxValue<store_t>::value, scale);
       }
 
-      norm_t *Norm() { return norm; }
-    };
-
-    template <typename store_type_t> struct SpinorNorm<store_type_t, false> {
-      using norm_t = float;
-      SpinorNorm() {}
-      SpinorNorm(const ColorSpinorField &x) {}
-      SpinorNorm(const SpinorNorm &sn) {}
-      SpinorNorm &operator=(const SpinorNorm &src) { return *this; }
-      void set(const ColorSpinorField &x) {}
-      __device__ __host__ inline norm_t load_norm(const int i, const int parity = 0) const { return 1.0; }
+      /**
+         @brief Load spinor function
+         @tparam real Precision of vector we wish to store from
+         @tparam n Complex vector length
+         @param[in] v output vector now loaded
+         @param[in] x checkerboard site index
+         @param[in] parity site parity
+      */
       template <typename real, int n>
-      __device__ __host__ inline norm_t store_norm(const vector_type<complex<real>, n> &v, int x, int parity)
-      {
-        return 1.0;
-      }
-      void backup(char **norm_h, size_t norm_bytes) {}
-      void restore(char **norm_h, size_t norm_bytes) {}
-      norm_t *Norm() { return nullptr; }
-    };
-
-    /**
-       @param RegType Register type used in kernel
-       @param InterType Intermediate format - RegType precision with StoreType ordering
-       @param StoreType Type used to store field in memory
-       @param N Length of vector of RegType elements that this Spinor represents
-    */
-    template <typename store_t, int N> struct Spinor : SpinorNorm<store_t, isFixed<store_t>::value> {
-      using SN = SpinorNorm<store_t, isFixed<store_t>::value>;
-      using Vector = typename VectorType<store_t, N>::type;
-      store_t *spinor;
-      int stride;
-      unsigned int cb_offset;
-
-      Spinor() : SN(), spinor(nullptr), stride(0), cb_offset(0) {}
-
-      Spinor(const ColorSpinorField &x) :
-        SN(x),
-        spinor(static_cast<store_t *>(const_cast<ColorSpinorField &>(x).V())),
-        stride(x.Stride()),
-        cb_offset(x.Bytes() / (2 * sizeof(store_t) * N))
-      {
-      }
-
-      Spinor(const Spinor &st) : SN(st), spinor(st.spinor), stride(st.stride), cb_offset(st.cb_offset) {}
-
-      Spinor &operator=(const Spinor &src)
-      {
-        if (&src != this) {
-          SN::operator=(src);
-          spinor = src.spinor;
-          stride = src.stride;
-          cb_offset = src.cb_offset;
-        }
-        return *this;
-      }
-
-      void set(const ColorSpinorField &x)
-      {
-        SN::set(x);
-        spinor = static_cast<store_t *>(const_cast<ColorSpinorField &>(x).V());
-        stride = x.Stride();
-        cb_offset = x.Bytes() / (2 * sizeof(store_t) * N);
-      }
-
-      template <typename real, int n>
-      __device__ __host__ inline void load(vector_type<complex<real>, n> &v, int x, int parity = 0) const
+      __device__ __host__ inline void load(array<complex<real>, n> &v, int x, int parity = 0) const
       {
         constexpr int len = 2 * n; // real-valued length
-        float nrm = isFixed<store_t>::value ? SN::load_norm(x, parity) : 0.0;
 
-        vector_type<real, len> v_;
+        if constexpr (!(n == 3 && isHalf<store_t>::value)) {
+          norm_t nrm = load_norm<isFixed<store_t>::value>(x, parity);
+          array<real, len> v_;
 
-        constexpr int M = len / N;
+          constexpr int M = len / N;
 #pragma unroll
-        for (int i = 0; i < M; i++) {
+          for (int i = 0; i < M; i++) {
+            // first load from memory
+            Vector vecTmp = vector_load<Vector>(data.spinor, parity * data.cb_offset + x + data.stride * i);
+            // now copy into output and scale
+#pragma unroll
+            for (int j = 0; j < N; j++) copy_and_scale(v_[i * N + j], reinterpret_cast<store_t *>(&vecTmp)[j], nrm);
+          }
+
+          for (int i = 0; i < n; i++) { v[i] = complex<real>(v_[2 * i + 0], v_[2 * i + 1]); }
+        } else {
+          // specialized path for half precision staggered
+          using Vector = int4;
+          auto cb_offset = data.cb_norm_offset / 4;
+          norm_t nrm;
+          array<real, len> v_;
+
           // first load from memory
-          Vector vecTmp = vector_load<Vector>(spinor, parity * cb_offset + x + stride * i);
+          Vector vecTmp = vector_load<Vector>(data.spinor, parity * cb_offset + x);
+
+          // extract norm
+          memcpy(&nrm, &vecTmp.w, sizeof(norm_t));
+
           // now copy into output and scale
 #pragma unroll
-          for (int j = 0; j < N; j++) copy_and_scale(v_[i * N + j], reinterpret_cast<store_t *>(&vecTmp)[j], nrm);
-        }
+          for (int i = 0; i < len; i++) copy_and_scale(v_[i], reinterpret_cast<store_t *>(&vecTmp)[i], nrm);
 
-        for (int i = 0; i < n; i++) { v[i] = complex<real>(v_[2 * i + 0], v_[2 * i + 1]); }
+#pragma unroll
+          for (int i = 0; i < n; i++) { v[i] = complex<real>(v_[2 * i + 0], v_[2 * i + 1]); }
+        }
       }
 
+      /**
+         @brief Save spinor function
+         @tparam real Precision of vector we wish to store from
+         @tparam n Complex vector length
+         @param[in] v input vector we wish to store
+         @param[in] x checkerboard site index
+         @param[in] parity site parity
+      */
       template <typename real, int n>
-      __device__ __host__ inline void save(const vector_type<complex<real>, n> &v, int x, int parity = 0)
+      __device__ __host__ inline void save(const array<complex<real>, n> &v, int x, int parity = 0) const
       {
         constexpr int len = 2 * n; // real-valued length
-        vector_type<real, len> v_;
 
-        if (isFixed<store_t>::value) {
-          real scale_inv = SN::template store_norm<real, n>(v, x, parity);
+        if constexpr (!(n == 3 && isHalf<store_t>::value)) {
+          array<real, len> v_;
+
+          if constexpr (isFixed<store_t>::value) {
+            real scale_inv = store_norm<isFixed<store_t>::value, real, n>(v, data.norm[x + parity * data.cb_norm_offset]);
+#pragma unroll
+            for (int i = 0; i < n; i++) {
+              v_[2 * i + 0] = scale_inv * v[i].real();
+              v_[2 * i + 1] = scale_inv * v[i].imag();
+            }
+          } else {
+#pragma unroll
+            for (int i = 0; i < n; i++) {
+              v_[2 * i + 0] = v[i].real();
+              v_[2 * i + 1] = v[i].imag();
+            }
+          }
+
+          constexpr int M = len / N;
+#pragma unroll
+          for (int i = 0; i < M; i++) {
+            Vector vecTmp;
+            // first do scalar copy converting into storage type
+#pragma unroll
+            for (int j = 0; j < N; j++) copy_scaled(reinterpret_cast<store_t *>(&vecTmp)[j], v_[i * N + j]);
+            // second do vectorized copy into memory
+            vector_store(data.spinor, parity * data.cb_offset + x + data.stride * i, vecTmp);
+          }
+        } else {
+          // specialized path for half precision staggered
+          using Vector = int4;
+          auto cb_offset = data.cb_norm_offset / 4;
+          norm_t norm;
+          norm_t scale_inv = store_norm<isFixed<store_t>::value, real, n>(v, norm);
+          array<real, len> v_;
 #pragma unroll
           for (int i = 0; i < n; i++) {
             v_[2 * i + 0] = scale_inv * v[i].real();
             v_[2 * i + 1] = scale_inv * v[i].imag();
           }
-        } else {
-#pragma unroll
-          for (int i = 0; i < n; i++) {
-            v_[2 * i + 0] = v[i].real();
-            v_[2 * i + 1] = v[i].imag();
-          }
-        }
 
-        constexpr int M = len / N;
-#pragma unroll
-        for (int i = 0; i < M; i++) {
           Vector vecTmp;
-          // first do scalar copy converting into storage type
+          memcpy(&vecTmp.w, &norm, sizeof(norm_t)); // pack the norm
 #pragma unroll
-          for (int j = 0; j < N; j++) copy_scaled(reinterpret_cast<store_t *>(&vecTmp)[j], v_[i * N + j]);
+          for (int i = 0; i < len; i++) copy_scaled(reinterpret_cast<store_t *>(&vecTmp)[i], v_[i]);
           // second do vectorized copy into memory
-          vector_store(spinor, parity * cb_offset + x + stride * i, vecTmp);
+          vector_store(data.spinor, parity * cb_offset + x, vecTmp);
         }
       }
     };
 
-    // n_vector defines the granularity of load/store, e.g., sets the
-    // size of vector we load from memory
+    /**
+       n_vector defines the granularity of load/store, e.g., sets the
+       size of vector we load from memory
+       @tparam store_t Field storage precision
+       @tparam GPU Whether this is GPU (or CPU)?
+       @tparam nSpin Number of spino components
+       @tparam site_unroll Whether we enforce all site components must
+       be unrolled onto the same thread (required for fixed-point precision)
+    */
     template <typename store_t, bool GPU, int nSpin, bool site_unroll> constexpr int n_vector() { return 0; }
 
     // native ordering
@@ -280,18 +354,10 @@ namespace quda
     template <> constexpr int n_vector<float, true, 4, true>() { return 4; }
     template <> constexpr int n_vector<float, true, 1, true>() { return 2; }
 
-#ifdef FLOAT8
-    template <> constexpr int n_vector<short, true, 4, true>() { return 8; }
-#else
-    template <> constexpr int n_vector<short, true, 4, true>() { return 4; }
-#endif
+    template <> constexpr int n_vector<short, true, 4, true>() { return QUDA_ORDER_FP; }
     template <> constexpr int n_vector<short, true, 1, true>() { return 2; }
 
-#ifdef FLOAT8
-    template <> constexpr int n_vector<int8_t, true, 4, true>() { return 8; }
-#else
-    template <> constexpr int n_vector<int8_t, true, 4, true>() { return 4; }
-#endif
+    template <> constexpr int n_vector<int8_t, true, 4, true>() { return QUDA_ORDER_FP; }
     template <> constexpr int n_vector<int8_t, true, 1, true>() { return 2; }
 
     // Just use float-2/float-4 ordering on CPU when not site unrolling
@@ -310,35 +376,27 @@ namespace quda
     template <> constexpr int n_vector<int8_t, false, 4, true>() { return 24; }
     template <> constexpr int n_vector<int8_t, false, 1, true>() { return 6; }
 
-#if defined(__CUDA_ARCH__) && __CUDACC_VER_MAJOR__ <= 9
-#define constexpr
-#endif
-
     template <template <typename...> class Functor,
               template <template <typename...> class, typename store_t, typename y_store_t, int, typename> class Blas,
               typename T, typename store_t, typename y_store_t, typename V, typename... Args>
-    constexpr void instantiate(const T &a, const T &b, const T &c, V &x, Args &&... args)
+    constexpr void instantiate(const T &a, const T &b, const T &c, V &x_, Args &&... args)
     {
+      unwrap_t<V> &x(x_);
       if (x.Nspin() == 4 || x.Nspin() == 2) {
-#if defined(NSPIN4) || defined(NSPIN2)
-        // Nspin-2 takes Nspin-4 path here, and we check for this later
-        Blas<Functor, store_t, y_store_t, 4, T>(a, b, c, x, args...);
-#else
-        errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
-#endif
+        if constexpr (is_enabled_spin(2) || is_enabled_spin(4)) {
+          // Nspin-2 takes Nspin-4 path here, and we check for this later
+          Blas<Functor, store_t, y_store_t, 4, T>(a, b, c, x, args...);
+        } else {
+          errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
+        }
       } else {
-#if defined(NSPIN1)
-        Blas<Functor, store_t, y_store_t, 1, T>(a, b, c, x, args...);
-#else
-        errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
-#endif
+        if constexpr (is_enabled_spin(1)) {
+          Blas<Functor, store_t, y_store_t, 1, T>(a, b, c, x, args...);
+        } else {
+          errorQuda("blas has not been built for Nspin=%d fields", x.Nspin());
+        }
       }
     }
-
-#if defined(__CUDA_ARCH__) && __CUDACC_VER_MAJOR__ <= 9
-#undef constexpr
-#define constexpr constexpr
-#endif
 
     // The instantiate helpers are used to instantiate the precision
     // and spin for the blas and reduce kernels
@@ -346,53 +404,52 @@ namespace quda
     template <template <typename...> class Functor,
               template <template <typename...> class, typename store_t, typename y_store_t, int, typename> class Blas,
               bool mixed, typename T, typename store_t, typename V, typename... Args>
-    constexpr typename std::enable_if<!mixed, void>::type instantiate(const T &a, const T &b, const T &c, V &x,
-                                                                      Args &&... args)
+    constexpr std::enable_if_t<!mixed, void> instantiate(const T &a, const T &b, const T &c, V &x,
+                                                         Args &&... args)
     {
       return instantiate<Functor, Blas, T, store_t, store_t>(a, b, c, x, args...);
     }
 
     template <template <typename...> class Functor,
               template <template <typename...> class, typename store_t, typename y_store_t, int, typename> class Blas,
-              bool mixed, typename T, typename x_store_t, typename V, typename... Args>
-    constexpr typename std::enable_if<mixed, void>::type instantiate(const T &a, const T &b, const T &c, V &x, V &y,
-                                                                     Args &&... args)
+              bool mixed, typename T, typename x_store_t, typename Vx, typename Vy, typename... Args>
+    constexpr std::enable_if_t<mixed, void> instantiate(const T &a, const T &b, const T &c, Vx &x_, Vy &y_,
+                                                        Args &&... args)
     {
+      unwrap_t<Vx> &x(x_);
+      unwrap_t<Vy> &y(y_);
+
       if (y.Precision() < x.Precision()) errorQuda("Y precision %d not supported", y.Precision());
 
       // use PromoteType to ensure we don't instantiate unwanted combinations (e.g., x > y)
       if (y.Precision() == QUDA_DOUBLE_PRECISION) {
 
-#if !(QUDA_PRECISION & 8)
-        if (x.Location() == QUDA_CUDA_FIELD_LOCATION)
-          errorQuda("QUDA_PRECISION=%d does not enable double precision", QUDA_PRECISION);
-#endif
+        if constexpr (!is_enabled(QUDA_DOUBLE_PRECISION))
+          if (x.Location() == QUDA_CUDA_FIELD_LOCATION)
+            errorQuda("QUDA_PRECISION=%d does not enable double precision", QUDA_PRECISION);
         // always instantiate the double-precision template to allow CPU
         // fields through, and prevent double-precision GPU
         // instantiation using gpu_mapper
         instantiate<Functor, Blas, T, x_store_t, double>(a, b, c, x, y, args...);
 
       } else if (y.Precision() == QUDA_SINGLE_PRECISION) {
-#if QUDA_PRECISION & 4
-        instantiate<Functor, Blas, T, x_store_t, typename PromoteTypeId<x_store_t, float>::type>(a, b, c, x, y,
-                                                                                                 args...);
-#else
-        errorQuda("QUDA_PRECISION=%d does not enable single precision", QUDA_PRECISION);
-#endif
+        if constexpr (is_enabled(QUDA_SINGLE_PRECISION))
+          instantiate<Functor, Blas, T, x_store_t, typename PromoteTypeId<x_store_t, float>::type>(a, b, c, x, y,
+                                                                                                   args...);
+        else
+          errorQuda("QUDA_PRECISION=%d does not enable single precision", QUDA_PRECISION);
       } else if (y.Precision() == QUDA_HALF_PRECISION) {
-#if QUDA_PRECISION & 2
-        instantiate<Functor, Blas, T, x_store_t, typename PromoteTypeId<x_store_t, short>::type>(a, b, c, x, y,
-                                                                                                 args...);
-#else
-        errorQuda("QUDA_PRECISION=%d does not enable half precision", QUDA_PRECISION);
-#endif
+        if constexpr (is_enabled(QUDA_HALF_PRECISION))
+          instantiate<Functor, Blas, T, x_store_t, typename PromoteTypeId<x_store_t, short>::type>(a, b, c, x, y,
+                                                                                                   args...);
+        else
+          errorQuda("QUDA_PRECISION=%d does not enable half precision", QUDA_PRECISION);
       } else if (y.Precision() == QUDA_QUARTER_PRECISION) {
-#if QUDA_PRECISION & 1
-        instantiate<Functor, Blas, T, x_store_t, typename PromoteTypeId<x_store_t, int8_t>::type>(a, b, c, x, y,
-                                                                                                args...);
-#else
-        errorQuda("QUDA_PRECISION=%d does not enable half precision", QUDA_PRECISION);
-#endif
+        if constexpr (is_enabled(QUDA_QUARTER_PRECISION))
+          instantiate<Functor, Blas, T, x_store_t, typename PromoteTypeId<x_store_t, int8_t>::type>(a, b, c, x, y,
+                                                                                                    args...);
+        else
+          errorQuda("QUDA_PRECISION=%d does not enable half precision", QUDA_PRECISION);
       } else {
         errorQuda("Unsupported precision %d\n", y.Precision());
       }
@@ -401,35 +458,32 @@ namespace quda
     template <template <typename...> class Functor,
               template <template <typename...> class, typename store_t, typename y_store_t, int, typename> class Blas,
               bool mixed, typename T, typename V, typename... Args>
-    constexpr void instantiate(const T &a, const T &b, const T &c, V &x, Args &&... args)
+    constexpr void instantiate(const T &a, const T &b, const T &c, V &x_, Args &&... args)
     {
+      unwrap_t<V> &x(x_);
       if (x.Precision() == QUDA_DOUBLE_PRECISION) {
-#if !(QUDA_PRECISION & 8)
-        if (x.Location() == QUDA_CUDA_FIELD_LOCATION)
-          errorQuda("QUDA_PRECISION=%d does not enable double precision", QUDA_PRECISION);
-#endif
+        if constexpr (!is_enabled(QUDA_DOUBLE_PRECISION))
+          if (x.Location() == QUDA_CUDA_FIELD_LOCATION)
+            errorQuda("QUDA_PRECISION=%d does not enable double precision", QUDA_PRECISION);
         // always instantiate the double-precision template to allow CPU
         // fields through, and prevent double-precision GPU
         // instantiation using double_mapper
-        instantiate<Functor, Blas, mixed, T, double>(a, b, c, x, args...);
+        instantiate<Functor, Blas, mixed, T, double>(a, b, c, x_, args...);
       } else if (x.Precision() == QUDA_SINGLE_PRECISION) {
-#if QUDA_PRECISION & 4
-        instantiate<Functor, Blas, mixed, T, float>(a, b, c, x, args...);
-#else
-        errorQuda("QUDA_PRECISION=%d does not enable single precision", QUDA_PRECISION);
-#endif
+        if constexpr (is_enabled(QUDA_SINGLE_PRECISION))
+          instantiate<Functor, Blas, mixed, T, float>(a, b, c, x_, args...);
+        else
+          errorQuda("QUDA_PRECISION=%d does not enable single precision", QUDA_PRECISION);
       } else if (x.Precision() == QUDA_HALF_PRECISION) {
-#if QUDA_PRECISION & 2
-        instantiate<Functor, Blas, mixed, T, short>(a, b, c, x, args...);
-#else
-        errorQuda("QUDA_PRECISION=%d does not enable half precision", QUDA_PRECISION);
-#endif
+        if constexpr (is_enabled(QUDA_HALF_PRECISION))
+          instantiate<Functor, Blas, mixed, T, short>(a, b, c, x_, args...);
+        else
+          errorQuda("QUDA_PRECISION=%d does not enable half precision", QUDA_PRECISION);
       } else if (x.Precision() == QUDA_QUARTER_PRECISION) {
-#if QUDA_PRECISION & 1
-        instantiate<Functor, Blas, mixed, T, int8_t>(a, b, c, x, args...);
-#else
-        errorQuda("QUDA_PRECISION=%d does not enable quarter precision", QUDA_PRECISION);
-#endif
+        if constexpr (is_enabled(QUDA_QUARTER_PRECISION))
+          instantiate<Functor, Blas, mixed, T, int8_t>(a, b, c, x_, args...);
+        else
+          errorQuda("QUDA_PRECISION=%d does not enable quarter precision", QUDA_PRECISION);
       } else {
         errorQuda("Unsupported precision %d\n", x.Precision());
       }
@@ -482,5 +536,16 @@ namespace quda
     };
 
   } // namespace blas
+
+  template <typename A, typename B> void check_size(const A &a, const B &b)
+  {
+    if (a.size() != b.size()) errorQuda("Mismatched sizes a=%lu b=%lu", a.size(), b.size());
+  }
+
+  template <typename A, typename B, typename... Args> void check_size(const A &a, const B &b, const Args &...args)
+  {
+    check_size(a, b);
+    check_size(b, args...);
+  }
 
 } // namespace quda

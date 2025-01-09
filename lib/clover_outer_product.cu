@@ -1,319 +1,210 @@
-#include <cstdio>
-#include <cstdlib>
-
-#include <tune_quda.h>
-#include <gauge_field_order.h>
-#include <color_spinor_field_order.h>
-#include <quda_matrix.h>
-#include <color_spinor.h>
 #include <dslash_quda.h>
+#include <tunable_nd.h>
+#include <instantiate.h>
+#include <kernels/clover_outer_product.cuh>
 
 namespace quda {
 
-  enum OprodKernelType { OPROD_INTERIOR_KERNEL, OPROD_EXTERIOR_KERNEL };
+  enum OprodKernelType { INTERIOR, EXTERIOR };
 
-  template<typename Float, int nColor_, QudaReconstructType recon>
-  struct CloverForceArg {
-    typedef typename mapper<Float>::type real;
-    static constexpr int nColor = nColor_;
-    static constexpr int nSpin = 4;
-    static constexpr int spin_project = true;
-    using F = typename colorspinor_mapper<Float, nSpin, nColor, spin_project>::type;
-    using Gauge = typename gauge_mapper<Float, recon, 18>::type;
-    using Force = typename gauge_mapper<Float, QUDA_RECONSTRUCT_NO, 18>::type;
-
-    const F inA;
-    const F inB;
-    const F inC;
-    const F inD;
-    Gauge  gauge;
-    Force force;
-    unsigned int length;
-    int X[4];
-    unsigned int parity;
-    unsigned int dir;
-    unsigned int displacement;
-    OprodKernelType kernelType;
-    bool partitioned[4];
-    Float coeff;
-
-    CloverForceArg(GaugeField &force, const GaugeField &gauge, const ColorSpinorField &inA, const ColorSpinorField &inB,
-                   const ColorSpinorField &inC, const ColorSpinorField &inD, const unsigned int parity, const double coeff) :
-      inA(inA),
-      inB(inB),
-      inC(inC),
-      inD(inD),
-      gauge(gauge),
-      force(force),
-      length(gauge.VolumeCB()),
-      parity(parity),
-      dir(5),
-      displacement(1),
-      kernelType(OPROD_INTERIOR_KERNEL),
-      coeff(coeff)
+  template <typename Float, int nColor, QudaReconstructType recon> class CloverOprod : public TunableKernel3D
+  {
+    using real = typename mapper<Float>::type;
+    template <int dim = -1, bool doublet = false> using Arg = CloverOprodArg<Float, nColor, recon, dim, doublet>;
+    GaugeField &force;
+    const GaugeField &U;
+    cvector_ref<const ColorSpinorField> &p;
+    const ColorSpinorField &p_halo;
+    cvector_ref<const ColorSpinorField> &x;
+    const ColorSpinorField &x_halo;
+    const std::vector<double> &coeff;
+    const bool doublet; // whether we applying the operator to a doublet
+    const int n_flavor;
+    OprodKernelType kernel;
+    int dir;
+    unsigned int minThreads() const override
     {
-      for (int i=0; i<4; ++i) this->X[i] = gauge.X()[i];
-      for (int i=0; i<4; ++i) this->partitioned[i] = commDimPartitioned(i) ? true : false;
+      return (kernel == INTERIOR ? (int)x_halo.getDslashConstant().volume_4d_cb :
+                                   x_halo.getDslashConstant().ghostFaceCB[dir]);
     }
-  };
-
-  template<typename real, typename Arg> __global__ void interiorOprodKernel(Arg arg)
-  {
-    typedef complex<real> Complex;
-    int idx = blockIdx.x*blockDim.x + threadIdx.x;
-
-    ColorSpinor<real, Arg::nColor, 4> A, B_shift, C, D_shift;
-    Matrix<Complex, Arg::nColor> U, result, temp;
-
-    while (idx<arg.length) {
-      A = arg.inA(idx, 0);
-      C = arg.inC(idx, 0);
-
-#pragma unroll
-      for (int dim=0; dim<4; ++dim) {
-	int shift[4] = {0,0,0,0};
-	shift[dim] = 1;
-	const int nbr_idx = neighborIndex(idx, shift, arg.partitioned, arg.parity, arg.X);
-
-	if (nbr_idx >= 0) {
-	  B_shift = arg.inB(nbr_idx, 0);
-	  D_shift = arg.inD(nbr_idx, 0);
-
-	  B_shift = (B_shift.project(dim,1)).reconstruct(dim,1);
-	  result = outerProdSpinTrace(B_shift,A);
-
-	  D_shift = (D_shift.project(dim,-1)).reconstruct(dim,-1);
-	  result += outerProdSpinTrace(D_shift,C);
-
-	  temp = arg.force(dim, idx, arg.parity);
-	  U = arg.gauge(dim, idx, arg.parity);
-	  result = temp + U*result*arg.coeff;
-	  arg.force(dim, idx, arg.parity) = result;
-	}
-      } // dim
-
-      idx += gridDim.x*blockDim.x;
-    }
-  } // interiorOprodKernel
-
-  template<int dim, typename real, typename Arg> __global__ void exteriorOprodKernel(Arg arg)
-  {
-    typedef complex<real> Complex;
-    int cb_idx = blockIdx.x*blockDim.x + threadIdx.x;
-
-    ColorSpinor<real, Arg::nColor, 4> A, B_shift, C, D_shift;
-    ColorSpinor<real, Arg::nColor, 2> projected_tmp;
-    Matrix<Complex, Arg::nColor> U, result, temp;
-
-    int x[4];
-    while (cb_idx<arg.length) {
-      coordsFromIndexExterior(x, cb_idx, arg.X, dim, arg.displacement, arg.parity);
-      const unsigned int bulk_cb_idx = ((((x[3]*arg.X[2] + x[2])*arg.X[1] + x[1])*arg.X[0] + x[0]) >> 1);
-      A = arg.inA(bulk_cb_idx, 0);
-      C = arg.inC(bulk_cb_idx, 0);
-
-      projected_tmp = arg.inB.Ghost(dim, 1, cb_idx, 0);
-      B_shift = projected_tmp.reconstruct(dim, 1);
-      result = outerProdSpinTrace(B_shift,A);
-
-      projected_tmp = arg.inD.Ghost(dim, 1, cb_idx, 0);
-      D_shift = projected_tmp.reconstruct(dim,-1);
-      result += outerProdSpinTrace(D_shift,C);
-
-      temp = arg.force(dim, bulk_cb_idx, arg.parity);
-      U = arg.gauge(dim, bulk_cb_idx, arg.parity);
-      result = temp + U*result*arg.coeff;
-      arg.force(dim, bulk_cb_idx, arg.parity) = result;
-
-      cb_idx += gridDim.x*blockDim.x;
-    }
-  } // exteriorOprodKernel
-
-  template<typename Float, typename Arg>
-  class CloverForce : public Tunable {
-    Arg &arg;
-    const GaugeField &meta;
-
-    unsigned int sharedBytesPerThread() const { return 0; }
-    unsigned int sharedBytesPerBlock(const TuneParam &) const { return 0; }
-
-    unsigned int minThreads() const { return arg.length; }
-    bool tuneGridDim() const { return false; }
 
   public:
-    CloverForce(Arg &arg, GaugeField &meta) :
-      arg(arg), meta(meta) {
-      writeAuxString(meta.AuxString());
-      // this sets the communications pattern for the packing kernel
-      int comms[QUDA_MAX_DIM] = { commDimPartitioned(0), commDimPartitioned(1), commDimPartitioned(2), commDimPartitioned(3) };
-      setPackComms(comms);
+    CloverOprod(const GaugeField &U, GaugeField &force, cvector_ref<const ColorSpinorField> &p,
+                const ColorSpinorField &p_halo, cvector_ref<const ColorSpinorField> &x, const ColorSpinorField &x_halo,
+                const std::vector<double> &coeff) :
+      TunableKernel3D(force, x.SiteSubset(), 4),
+      force(force),
+      U(U),
+      p(p),
+      p_halo(p_halo),
+      x(x),
+      x_halo(x_halo),
+      coeff(coeff),
+      doublet(x.TwistFlavor() == QUDA_TWIST_NONDEG_DOUBLET),
+      n_flavor(doublet ? 2 : 1)
+    {
+      if (doublet) strcat(aux, ",doublet");
+      setRHSstring(aux, p.size());
+      char aux2[TuneKey::aux_n];
+      strcpy(aux2, aux);
+      strcat(aux, ",interior");
+      kernel = INTERIOR;
+      apply(device::get_default_stream());
+
+      for (int i = 3; i >= 0; i--) {
+        resizeVector(x.SiteSubset(), 1);
+        dir = i;
+        if (!commDimPartitioned(i)) continue;
+        strcpy(aux, aux2);
+        strcat(aux, ",exterior,dir=");
+        strcat(aux, dir == 0 ? "0" : dir == 1 ? "1" : dir == 2 ? "2" : "3");
+        kernel = EXTERIOR;
+        apply(device::get_default_stream());
+      }
     }
 
-    void apply(const qudaStream_t &stream) {
-      if (meta.Location() == QUDA_CUDA_FIELD_LOCATION) {
-	// Disable tuning for the time being
-	TuneParam tp = tuneLaunch(*this,getTuning(),getVerbosity());
+    void apply(const qudaStream_t &stream) override
+    {
+      TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
 
-	if (arg.kernelType == OPROD_INTERIOR_KERNEL) {
-	  qudaLaunchKernel(interiorOprodKernel<Float, Arg>, tp, stream, arg);
-        } else if (arg.kernelType == OPROD_EXTERIOR_KERNEL) {
-          if (arg.dir == 0)      qudaLaunchKernel(exteriorOprodKernel<0,Float,Arg>, tp, stream, arg);
-	  else if (arg.dir == 1) qudaLaunchKernel(exteriorOprodKernel<1,Float,Arg>, tp, stream, arg);
-	  else if (arg.dir == 2) qudaLaunchKernel(exteriorOprodKernel<2,Float,Arg>, tp, stream, arg);
-          else if (arg.dir == 3) qudaLaunchKernel(exteriorOprodKernel<3,Float,Arg>, tp, stream, arg);
-        } else {
-          errorQuda("Kernel type not supported\n");
+      if (kernel == INTERIOR) {
+        if (doublet)
+          launch<Interior>(tp, stream, Arg<-1, true>(force, U, p, p_halo, x, x_halo, coeff));
+        else
+          launch<Interior>(tp, stream, Arg<>(force, U, p, p_halo, x, x_halo, coeff));
+      } else if (kernel == EXTERIOR) {
+        switch (dir) {
+        case 0: {
+          if (doublet)
+            launch<Exterior>(tp, stream, Arg<0, true>(force, U, p, p_halo, x, x_halo, coeff));
+          else
+            launch<Exterior>(tp, stream, Arg<0>(force, U, p, p_halo, x, x_halo, coeff));
+          break;
         }
-      }else{ // run the CPU code
-	errorQuda("No CPU support for staggered outer-product calculation\n");
+        case 1: {
+          if (doublet)
+            launch<Exterior>(tp, stream, Arg<1, true>(force, U, p, p_halo, x, x_halo, coeff));
+          else
+            launch<Exterior>(tp, stream, Arg<1>(force, U, p, p_halo, x, x_halo, coeff));
+          break;
+        }
+        case 2: {
+          if (doublet)
+            launch<Exterior>(tp, stream, Arg<2, true>(force, U, p, p_halo, x, x_halo, coeff));
+          else
+            launch<Exterior>(tp, stream, Arg<2>(force, U, p, p_halo, x, x_halo, coeff));
+          break;
+        }
+        case 3: {
+          if (doublet)
+            launch<Exterior>(tp, stream, Arg<3, true>(force, U, p, p_halo, x, x_halo, coeff));
+          else
+            launch<Exterior>(tp, stream, Arg<3>(force, U, p, p_halo, x, x_halo, coeff));
+          break;
+        }
+        default: errorQuda("Unexpected direction %d", dir);
+        }
       }
-    } // apply
-
-    void preTune() {
-      this->arg.force.save();
-    }
-    void postTune() {
-      this->arg.force.load();
     }
 
-    long long flops() const {
-      if (arg.kernelType == OPROD_INTERIOR_KERNEL) {
-	return ((long long)arg.length)*4*(24 + 144 + 234); // spin project + spin trace + multiply-add
+    void preTune() override { force.backup(); }
+    void postTune() override { force.restore(); }
+
+    // spin trace + multiply-add (ignore spin-project)
+    long long flops() const override
+    {
+      int oprod_flops = nColor * nColor * (8 * x.Nspin() - 2);
+      int gemm_flops = nColor * nColor * (8 * nColor - 2);
+      int mat_size = 2 * nColor * nColor;
+
+      return 2 * minThreads() * n_flavor * p.size() * (2 * oprod_flops + gemm_flops + 3 * mat_size)
+        * (kernel == INTERIOR ? 4 : 1);
+    }
+
+    long long bytes() const override
+    {
+      if (kernel == INTERIOR) {
+        return 8 * (x.Bytes() + p.Bytes()) + 2 * force.Bytes() + U.Bytes();
       } else {
-	return ((long long)arg.length)*(144 + 234); // spin trace + multiply-add
+        return 2 * minThreads()
+          * (n_flavor * p.size() * nColor * (2 * x.Nspin() + 2 * x.Nspin() / 2) * 2 + 2 * force.Reconstruct()
+             + U.Reconstruct())
+          * sizeof(Float);
       }
     }
-    long long bytes() const {
-      if (arg.kernelType == OPROD_INTERIOR_KERNEL) {
-	return arg.length*(arg.inA.Bytes() + arg.inC.Bytes() + 4*(arg.inB.Bytes() + arg.inD.Bytes() + 2*arg.force.Bytes() + arg.gauge.Bytes()));
-      } else {
-	return arg.length*(arg.inA.Bytes() + arg.inB.Bytes()/2 + arg.inC.Bytes() + arg.inD.Bytes()/2 + 2*arg.force.Bytes() + arg.gauge.Bytes());
-      }
-    }
+  }; // CloverOprod
 
-    TuneKey tuneKey() const {
-      char new_aux[TuneKey::aux_n];
-      strcpy(new_aux, aux);
-      if (arg.kernelType == OPROD_INTERIOR_KERNEL) {
-	strcat(new_aux, ",interior");
-      } else {
-	strcat(new_aux, ",exterior");
-	if (arg.dir==0) strcat(new_aux, ",dir=0");
-	else if (arg.dir==1) strcat(new_aux, ",dir=1");
-	else if (arg.dir==2) strcat(new_aux, ",dir=2");
-	else if (arg.dir==3) strcat(new_aux, ",dir=3");
-      }
-      return TuneKey(meta.VolString(), "CloverForce", new_aux);
-    }
-  }; // CloverForce
+  void exchangeGhost(const ColorSpinorField &halo, cvector_ref<const ColorSpinorField> &v, int dag)
+  {
+    // this sets the communications pattern for the packing kernel
+    int comms[QUDA_MAX_DIM] = { commDimPartitioned(0), commDimPartitioned(1),
+                                commDimPartitioned(2), commDimPartitioned(3) };
 
-  void exchangeGhost(cudaColorSpinorField &a, int parity, int dag) {
-    // need to enable packing in temporal direction to get spin-projector correct
-    pushKernelPackT(true);
+    setPackComms(comms);
 
     // first transfer src1
     qudaDeviceSynchronize();
 
     MemoryLocation location[2*QUDA_MAX_DIM] = {Device, Device, Device, Device, Device, Device, Device, Device};
-    a.pack(1, 1-parity, dag, Nstream-1, location, Device);
+    halo.pack(1, 0, dag, device::get_default_stream(), location, Device, true, 0.0, 0.0, 0.0, 0, v);
 
     qudaDeviceSynchronize();
 
     for (int i=3; i>=0; i--) {
       if (commDimPartitioned(i)) {
 	// Initialize the host transfer from the source spinor
-	a.gather(1, dag, 2*i);
+        halo.gather(2 * i, device::get_stream(2 * i));
       } // commDim(i)
     } // i=3,..,0
 
     qudaDeviceSynchronize(); comm_barrier();
 
     for (int i=3; i>=0; i--) {
-      if (commDimPartitioned(i)) {
-	a.commsStart(1, 2*i, dag);
-      }
+      if (commDimPartitioned(i)) { halo.commsStart(2 * i, device::get_stream(2 * i)); }
     }
 
     for (int i=3; i>=0; i--) {
       if (commDimPartitioned(i)) {
-	a.commsWait(1, 2*i, dag);
-	a.scatter(1, dag, 2*i);
+        halo.commsWait(2 * i, device::get_stream(2 * i));
+        halo.scatter(2 * i, device::get_stream(2 * i));
       }
     }
 
     qudaDeviceSynchronize();
-    popKernelPackT(); // restore packing state
 
-    a.bufferIndex = (1 - a.bufferIndex);
+    halo.bufferIndex = (1 - halo.bufferIndex);
     comm_barrier();
   }
 
-  template <typename Float, QudaReconstructType recon>
-  void computeCloverForce(GaugeField &force, const GaugeField &gauge, const ColorSpinorField& inA, const ColorSpinorField& inB,
-                          const ColorSpinorField& inC, const ColorSpinorField& inD, int parity, const double coeff)
+  void computeCloverOprod(GaugeField &force, const GaugeField &U, cvector_ref<const ColorSpinorField> &x,
+                          cvector_ref<const ColorSpinorField> &p, const std::vector<double> &coeff)
   {
-    // Create the arguments for the interior kernel
-    CloverForceArg<Float, 3, recon> arg(force, gauge, inA, inB, inC, inD, parity, coeff);
-    CloverForce<Float,decltype(arg)> oprod(arg, force);
-
-    arg.kernelType = OPROD_INTERIOR_KERNEL;
-    arg.length = inA.VolumeCB();
-    oprod.apply(0);
-
-    for (int i=3; i>=0; i--) {
-      if (commDimPartitioned(i)) {
-        // update parameters for this exterior kernel
-        arg.kernelType = OPROD_EXTERIOR_KERNEL;
-        arg.dir = i;
-        arg.length = inA.GhostFaceCB()[i];
-        arg.displacement = 1; // forwards displacement
-        oprod.apply(0);
+    if constexpr (is_enabled_clover()) {
+      if (x.size() > get_max_multi_rhs()) {
+        computeCloverOprod(force, U, {x.begin(), x.begin() + x.size() / 2}, {p.begin(), p.begin() + p.size() / 2},
+                           {coeff.begin(), coeff.begin() + coeff.size() / 2});
+        computeCloverOprod(force, U, {x.begin() + x.size() / 2, x.end()}, {p.begin() + p.size() / 2, p.end()},
+                           {coeff.begin() + coeff.size() / 2, coeff.end()});
+        return;
       }
-    } // i=3,..,0
-  } // computeCloverForce
 
-  void computeCloverForce(GaugeField &force, const GaugeField &U, std::vector<ColorSpinorField *> &x,
-                          std::vector<ColorSpinorField *> &p, std::vector<double> &coeff)
-  {
-#ifdef GPU_CLOVER_DIRAC
-    if (force.Order() != QUDA_FLOAT2_GAUGE_ORDER) errorQuda("Unsupported output ordering: %d\n", force.Order());
-    checkPrecision(*x[0], *p[0], force, U);
+      checkNative(x, p, force, U);
+      checkPrecision(x, p, force, U);
 
-    int dag = 1;
+      int dag = 1;
+      getProfile().TPSTART(QUDA_PROFILE_COMMS);
+      auto x_halo = ColorSpinorField::create_comms_batch(x);
+      auto p_halo = ColorSpinorField::create_comms_batch(p);
+      exchangeGhost(x_halo, x, dag);
+      exchangeGhost(p_halo, p, 1 - dag);
+      getProfile().TPSTOP(QUDA_PROFILE_COMMS);
 
-    for (unsigned int i=0; i<x.size(); i++) {
-      static_cast<cudaColorSpinorField&>(x[i]->Even()).allocateGhostBuffer(1);
-      static_cast<cudaColorSpinorField&>(x[i]->Odd()).allocateGhostBuffer(1);
-      static_cast<cudaColorSpinorField&>(p[i]->Even()).allocateGhostBuffer(1);
-      static_cast<cudaColorSpinorField&>(p[i]->Odd()).allocateGhostBuffer(1);
-
-      for (int parity=0; parity<2; parity++) {
-
-	ColorSpinorField& inA = (parity&1) ? p[i]->Odd() : p[i]->Even();
-	ColorSpinorField& inB = (parity&1) ? x[i]->Even(): x[i]->Odd();
-	ColorSpinorField& inC = (parity&1) ? x[i]->Odd() : x[i]->Even();
-	ColorSpinorField& inD = (parity&1) ? p[i]->Even(): p[i]->Odd();
-
-	if (x[0]->Precision() == QUDA_DOUBLE_PRECISION) {
-          exchangeGhost(static_cast<cudaColorSpinorField&>(inB), parity, dag);
-          exchangeGhost(static_cast<cudaColorSpinorField&>(inD), parity, 1-dag);
-
-	  if (U.Reconstruct() == QUDA_RECONSTRUCT_NO) {
-	    computeCloverForce<double, QUDA_RECONSTRUCT_NO>(force, U, inA, inB, inC, inD, parity, coeff[i]);
-	  } else if (U.Reconstruct() == QUDA_RECONSTRUCT_12) {
-	    computeCloverForce<double, QUDA_RECONSTRUCT_12>(force, U, inA, inB, inC, inD, parity, coeff[i]);
-	  } else {
-	    errorQuda("Unsupported recontruction type");
-	  }
-	} else {
-	  errorQuda("Unsupported precision: %d\n", x[0]->Precision());
-	}
-      }
+      getProfile().TPSTART(QUDA_PROFILE_COMPUTE);
+      instantiate<CloverOprod, ReconstructNo12>(U, force, p, p_halo, x, x_halo, coeff);
+      getProfile().TPSTOP(QUDA_PROFILE_COMPUTE);
+    } else {
+      errorQuda("Clover Dirac operator has not been built");
     }
-#else // GPU_CLOVER_DIRAC not defined
-   errorQuda("Clover Dirac operator has not been built!");
-#endif
-
-  } // computeCloverForce
+  }
 
 } // namespace quda

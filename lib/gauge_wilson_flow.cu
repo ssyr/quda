@@ -1,38 +1,52 @@
 #include <quda_internal.h>
-#include <tune_quda.h>
 #include <gauge_field.h>
-
-#include <jitify_helper.cuh>
+#include <tunable_nd.h>
 #include <kernels/gauge_wilson_flow.cuh>
 #include <instantiate.h>
 
 namespace quda {
 
-  template <typename Float, int nColor, QudaReconstructType recon>
-  class GaugeWFlowStep : TunableVectorYZ
+  template <typename Float, int nColor, QudaReconstructType recon> class GaugeWFlowStep : TunableKernel3D
   {
+    using real = typename mapper<Float>::type;
     static constexpr int wflow_dim = 4; // apply flow in all dims
-    GaugeWFlowArg<Float, nColor, recon, wflow_dim> arg;
-    const GaugeField &meta;
+    GaugeField &out;
+    GaugeField &temp;
+    const GaugeField &in;
+    const real epsilon;
+    const QudaGaugeSmearType wflow_type;
+    const QudaWFlowStepType step_type;
 
-    bool tuneSharedBytes() const { return false; }
-    bool tuneGridDim() const { return false; }
-    unsigned int minThreads() const { return arg.threads; }
-    unsigned int maxBlockSize(const TuneParam &param) const { return 32; }
-    int blockStep() const { return 8; }
-    int blockMin() const { return 8; }
+    unsigned int minThreads() const { return in.LocalVolumeCB(); }
+    unsigned int maxSharedBytesPerBlock() const {
+      return wflow_type == QUDA_GAUGE_SMEAR_SYMANZIK_FLOW ? maxDynamicSharedBytesPerBlock() : TunableKernel3D::maxSharedBytesPerBlock();
+    }
+
+    unsigned int sharedBytesPerThread() const
+    {
+      // use ThreadLocalCache if using Symanzik improvement for two Link fields
+      return (wflow_type == QUDA_GAUGE_SMEAR_SYMANZIK_FLOW ?
+                2 * in.Ncolor() * in.Ncolor() * 2 * sizeof(typename mapper<Float>::type) :
+                0)
+        + 4 * sizeof(int); // for thread_array
+    }
 
   public:
-    GaugeWFlowStep(GaugeField &out, GaugeField &temp, const GaugeField &in, const double epsilon, const QudaWFlowType wflow_type, const WFlowStepType step_type) :
-      TunableVectorYZ(2, wflow_dim),
-      arg(out, temp, in, epsilon, wflow_type, step_type),
-      meta(in)
+    GaugeWFlowStep(GaugeField &out, GaugeField &temp, const GaugeField &in, const double epsilon,
+                   const QudaGaugeSmearType wflow_type, const QudaWFlowStepType step_type) :
+      TunableKernel3D(in, 2, wflow_dim),
+      out(out),
+      temp(temp),
+      in(in),
+      epsilon(epsilon),
+      wflow_type(wflow_type),
+      step_type(step_type)
     {
-      strcpy(aux, meta.AuxString());
+      getProfile().TPSTART(QUDA_PROFILE_COMPUTE);
       strcat(aux, comm_dim_partitioned_string());
       switch (wflow_type) {
-      case QUDA_WFLOW_TYPE_WILSON: strcat(aux,",computeWFlowStepWilson"); break;
-      case QUDA_WFLOW_TYPE_SYMANZIK: strcat(aux,",computeWFlowStepSymanzik"); break;
+      case QUDA_GAUGE_SMEAR_WILSON_FLOW: strcat(aux,",computeWFlowStepWilson"); break;
+      case QUDA_GAUGE_SMEAR_SYMANZIK_FLOW: strcat(aux,",computeWFlowStepSymanzik"); break;
       default : errorQuda("Unknown Wilson Flow type %d", wflow_type);
       }
       switch (step_type) {
@@ -42,61 +56,61 @@ namespace quda {
       default : errorQuda("Unknown Wilson Flow step type %d", step_type);
       }
 
-#ifdef JITIFY
-      create_jitify_program("kernels/gauge_wilson_flow.cuh");
-#endif
-      apply(0);
-      qudaDeviceSynchronize();
+      apply(device::get_default_stream());
+      getProfile().TPSTOP(QUDA_PROFILE_COMPUTE);
     }
+
+    template <QudaGaugeSmearType wflow_type, QudaWFlowStepType step_type>
+    using Arg = GaugeWFlowArg<Float, nColor, recon, wflow_dim, wflow_type, step_type>;
 
     void apply(const qudaStream_t &stream)
     {
       TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
-#ifdef JITIFY
-      using namespace jitify::reflection;
-      jitify_error = program->kernel("quda::computeWFlowStep").instantiate(arg.wflow_type,arg.step_type,Type<decltype(arg)>())
-        .configure(tp.grid, tp.block, tp.shared_bytes, stream).launch(arg);
-#else
-      switch (arg.wflow_type) {
-      case QUDA_WFLOW_TYPE_WILSON:
-        switch (arg.step_type) {
-        case WFLOW_STEP_W1: qudaLaunchKernel(computeWFlowStep<QUDA_WFLOW_TYPE_WILSON, WFLOW_STEP_W1, decltype(arg)>, tp, stream, arg); break;
-        case WFLOW_STEP_W2: qudaLaunchKernel(computeWFlowStep<QUDA_WFLOW_TYPE_WILSON, WFLOW_STEP_W2, decltype(arg)>, tp, stream, arg); break;
-        case WFLOW_STEP_VT: qudaLaunchKernel(computeWFlowStep<QUDA_WFLOW_TYPE_WILSON, WFLOW_STEP_VT, decltype(arg)>, tp, stream, arg); break;
+
+      switch (wflow_type) {
+      case QUDA_GAUGE_SMEAR_WILSON_FLOW:
+        switch (step_type) {
+        case WFLOW_STEP_W1:
+          launch<WFlow>(tp, stream, Arg<QUDA_GAUGE_SMEAR_WILSON_FLOW, WFLOW_STEP_W1>(out, temp, in, epsilon));
+          break;
+        case WFLOW_STEP_W2:
+          launch<WFlow>(tp, stream, Arg<QUDA_GAUGE_SMEAR_WILSON_FLOW, WFLOW_STEP_W2>(out, temp, in, epsilon));
+          break;
+        case WFLOW_STEP_VT:
+          launch<WFlow>(tp, stream, Arg<QUDA_GAUGE_SMEAR_WILSON_FLOW, WFLOW_STEP_VT>(out, temp, in, epsilon));
+          break;
         }
         break;
-      case QUDA_WFLOW_TYPE_SYMANZIK:
-        switch (arg.step_type) {
-        case WFLOW_STEP_W1: qudaLaunchKernel(computeWFlowStep<QUDA_WFLOW_TYPE_SYMANZIK, WFLOW_STEP_W1, decltype(arg)>, tp, stream, arg); break;
-        case WFLOW_STEP_W2: qudaLaunchKernel(computeWFlowStep<QUDA_WFLOW_TYPE_SYMANZIK, WFLOW_STEP_W2, decltype(arg)>, tp, stream, arg); break;
-        case WFLOW_STEP_VT: qudaLaunchKernel(computeWFlowStep<QUDA_WFLOW_TYPE_SYMANZIK, WFLOW_STEP_VT, decltype(arg)>, tp, stream, arg); break;
+      case QUDA_GAUGE_SMEAR_SYMANZIK_FLOW:
+        tp.set_max_shared_bytes = true;
+        switch (step_type) {
+        case WFLOW_STEP_W1:
+          launch<WFlow>(tp, stream, Arg<QUDA_GAUGE_SMEAR_SYMANZIK_FLOW, WFLOW_STEP_W1>(out, temp, in, epsilon));
+          break;
+        case WFLOW_STEP_W2:
+          launch<WFlow>(tp, stream, Arg<QUDA_GAUGE_SMEAR_SYMANZIK_FLOW, WFLOW_STEP_W2>(out, temp, in, epsilon));
+          break;
+        case WFLOW_STEP_VT:
+          launch<WFlow>(tp, stream, Arg<QUDA_GAUGE_SMEAR_SYMANZIK_FLOW, WFLOW_STEP_VT>(out, temp, in, epsilon));
+          break;
         }
         break;
-      default: errorQuda("Unknown Wilson Flow type %d", arg.wflow_type);
+      default: errorQuda("Unknown Wilson Flow type %d", wflow_type);
       }
-#endif
     }
 
-    TuneKey tuneKey() const { return TuneKey(meta.VolString(), typeid(*this).name(), aux); }
-
-    void preTune() {
-      arg.out.save(); // defensive measure in case out aliases in
-      arg.temp.save();
-    }
-    void postTune() {
-      arg.out.load();
-      arg.temp.load();
-    }
+    void preTune() { out.backup(); temp.backup(); }
+    void postTune() { out.restore(); temp.restore(); }
 
     long long flops() const
     {
       // only counts number of mat-muls per thread
-      long long threads = 2ll * arg.threads * wflow_dim;
-      long long mat_flops = arg.nColor * arg.nColor * (8 * arg.nColor - 2);
+      long long threads = in.LocalVolume() * wflow_dim;
+      long long mat_flops = nColor * nColor * (8 * nColor - 2);
       long long mat_muls = 1; // 1 comes from Z * conj(U) term
-      switch(arg.wflow_type) {
-      case QUDA_WFLOW_TYPE_WILSON: mat_muls += 4 * (wflow_dim - 1); break;
-      case QUDA_WFLOW_TYPE_SYMANZIK: mat_muls += 28 * (wflow_dim - 1); break;
+      switch (wflow_type) {
+      case QUDA_GAUGE_SMEAR_WILSON_FLOW: mat_muls += 4 * (wflow_dim - 1); break;
+      case QUDA_GAUGE_SMEAR_SYMANZIK_FLOW: mat_muls += 28 * (wflow_dim - 1); break;
       default : errorQuda("Unknown Wilson Flow type");
       }
       return mat_muls * mat_flops * threads;
@@ -105,39 +119,50 @@ namespace quda {
     long long bytes() const
     {
       int links = 0;
-      switch(arg.wflow_type) {
-      case QUDA_WFLOW_TYPE_WILSON: links = 6; break;
-      case QUDA_WFLOW_TYPE_SYMANZIK: links = 24; break;
+      switch (wflow_type) {
+      case QUDA_GAUGE_SMEAR_WILSON_FLOW: links = 6; break;
+      case QUDA_GAUGE_SMEAR_SYMANZIK_FLOW: links = 24; break;
       default : errorQuda("Unknown Wilson Flow type");
       }
-      auto temp_io = arg.step_type == WFLOW_STEP_W2 ? 2 : arg.step_type == WFLOW_STEP_VT ? 1 : 0;
-      return ((1 + (wflow_dim-1) * links) * arg.in.Bytes() + arg.out.Bytes() + temp_io*arg.temp.Bytes()) * 2ll * arg.threads * wflow_dim;
+      auto temp_io = step_type == WFLOW_STEP_W2 ? 2 : step_type == WFLOW_STEP_VT ? 1 : 0;
+      return ((1 + (wflow_dim - 1) * links) * in.Bytes() + out.Bytes() + temp_io * temp.Bytes());
     }
   }; // GaugeWFlowStep
 
-  void WFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, const double epsilon, const QudaWFlowType wflow_type)
+  void WFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, const double epsilon, const QudaGaugeSmearType smear_type)
   {
-#ifdef GPU_GAUGE_TOOLS
     checkPrecision(out, temp, in);
     checkReconstruct(out, in);
+    checkNative(out, in);
     if (temp.Reconstruct() != QUDA_RECONSTRUCT_NO) errorQuda("Temporary vector must not use reconstruct");
-    if (!out.isNative()) errorQuda("Order %d with %d reconstruct not supported", in.Order(), in.Reconstruct());
-    if (!in.isNative()) errorQuda("Order %d with %d reconstruct not supported", out.Order(), out.Reconstruct());
-
+    if (!(smear_type == QUDA_GAUGE_SMEAR_WILSON_FLOW || smear_type == QUDA_GAUGE_SMEAR_SYMANZIK_FLOW))
+      errorQuda("Gauge smear type %d not supported for flow kernels", smear_type);
+    
     // Set each step type as an arg parameter, update halos if needed
     // Step W1
-    instantiate<GaugeWFlowStep,WilsonReconstruct>(out, temp, in, epsilon, wflow_type, WFLOW_STEP_W1);
+    instantiate<GaugeWFlowStep>(out, temp, in, epsilon, smear_type, WFLOW_STEP_W1);
     out.exchangeExtendedGhost(out.R(), false);
 
     // Step W2
-    instantiate<GaugeWFlowStep,WilsonReconstruct>(in, temp, out, epsilon, wflow_type, WFLOW_STEP_W2);
+    instantiate<GaugeWFlowStep>(in, temp, out, epsilon, smear_type, WFLOW_STEP_W2);
     in.exchangeExtendedGhost(in.R(), false);
 
     // Step Vt
-    instantiate<GaugeWFlowStep,WilsonReconstruct>(out, temp, in, epsilon, wflow_type, WFLOW_STEP_VT);
+    instantiate<GaugeWFlowStep>(out, temp, in, epsilon, smear_type, WFLOW_STEP_VT);
     out.exchangeExtendedGhost(out.R(), false);
-#else
-    errorQuda("Gauge tools are not built");
-#endif
+  }
+
+  void GFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, const double epsilon,
+                 const QudaGaugeSmearType smear_type, const QudaWFlowStepType step_type)
+  {
+    checkPrecision(out, temp, in);
+    checkReconstruct(out, in);
+    checkNative(out, in);
+    if (temp.Reconstruct() != QUDA_RECONSTRUCT_NO) errorQuda("Temporary vector must not use reconstruct");
+    if (!(smear_type == QUDA_GAUGE_SMEAR_WILSON_FLOW || smear_type == QUDA_GAUGE_SMEAR_SYMANZIK_FLOW))
+      errorQuda("Gauge smear type %d not supported for flow kernels", smear_type);
+
+    instantiate<GaugeWFlowStep>(out, temp, in, epsilon, smear_type, step_type);
+    out.exchangeExtendedGhost(out.R(), false);
   }
 }

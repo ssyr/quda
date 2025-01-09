@@ -2,8 +2,6 @@
 #include <dslash_quda.h>
 #include <blas_quda.h>
 
-#include <iostream>
-
 namespace quda {
 
   // FIXME: At the moment, it's unsafe for more than one Dirac operator to be active unless
@@ -15,15 +13,27 @@ namespace quda {
     mass(param.mass),
     laplace3D(param.laplace3D),
     matpcType(param.matpcType),
+    this_parity(QUDA_INVALID_PARITY),
+    other_parity(QUDA_INVALID_PARITY),
     dagger(param.dagger),
-    flops(0),
-    tmp1(param.tmp1),
-    tmp2(param.tmp2),
     type(param.type),
     halo_precision(param.halo_precision),
+    commDim(param.commDim),
+    use_mobius_fused_kernel(param.use_mobius_fused_kernel),
+    distance_pc_alpha0(param.distance_pc_alpha0),
+    distance_pc_t0(param.distance_pc_t0),
     profile("Dirac", false)
   {
-    for (int i=0; i<4; i++) commDim[i] = param.commDim[i];
+    if (matpcType == QUDA_MATPC_EVEN_EVEN || matpcType == QUDA_MATPC_EVEN_EVEN_ASYMMETRIC) {
+      this_parity = QUDA_EVEN_PARITY;
+      other_parity = QUDA_ODD_PARITY;
+    } else if (matpcType == QUDA_MATPC_ODD_ODD || matpcType == QUDA_MATPC_ODD_ODD_ASYMMETRIC) {
+      this_parity = QUDA_ODD_PARITY;
+      other_parity = QUDA_EVEN_PARITY;
+    } else {
+      errorQuda("Invalid matpcType(%d) in function\n", matpcType);
+    }
+    symmetric = (matpcType == QUDA_MATPC_EVEN_EVEN || matpcType == QUDA_MATPC_ODD_ODD);
   }
 
   Dirac::Dirac(const Dirac &dirac) :
@@ -31,15 +41,17 @@ namespace quda {
     kappa(dirac.kappa),
     laplace3D(dirac.laplace3D),
     matpcType(dirac.matpcType),
+    this_parity(dirac.this_parity),
+    other_parity(dirac.other_parity),
+    symmetric(dirac.symmetric),
     dagger(dirac.dagger),
-    flops(0),
-    tmp1(dirac.tmp1),
-    tmp2(dirac.tmp2),
     type(dirac.type),
     halo_precision(dirac.halo_precision),
+    commDim(dirac.commDim),
+    distance_pc_alpha0(dirac.distance_pc_alpha0),
+    distance_pc_t0(dirac.distance_pc_t0),
     profile("Dirac", false)
   {
-    for (int i=0; i<4; i++) commDim[i] = dirac.commDim[i];
   }
 
   // Destroy
@@ -55,13 +67,13 @@ namespace quda {
       kappa = dirac.kappa;
       laplace3D = dirac.laplace3D;
       matpcType = dirac.matpcType;
+      this_parity = dirac.this_parity;
+      other_parity = dirac.other_parity;
+      symmetric = dirac.symmetric;
       dagger = dirac.dagger;
-      flops = 0;
-      tmp1 = dirac.tmp1;
-      tmp2 = dirac.tmp2;
-
-      for (int i=0; i<4; i++) commDim[i] = dirac.commDim[i];
-
+      commDim = dirac.commDim;
+      distance_pc_alpha0 = dirac.distance_pc_alpha0;
+      distance_pc_t0 = dirac.distance_pc_t0;
       profile = dirac.profile;
 
       if (type != dirac.type) errorQuda("Trying to copy between incompatible types %d %d", type, dirac.type);
@@ -69,34 +81,16 @@ namespace quda {
     return *this;
   }
 
-  bool Dirac::newTmp(ColorSpinorField **tmp, const ColorSpinorField &a) const {
-    if (*tmp) return false;
-    ColorSpinorParam param(a);
-    param.create = QUDA_ZERO_FIELD_CREATE; // need to zero elements else padded region will be junk
-
-    if (typeid(a) == typeid(cudaColorSpinorField)) *tmp = new cudaColorSpinorField(a, param);
-    else *tmp = new cpuColorSpinorField(param);
-
-    return true;
-  }
-
-  void Dirac::deleteTmp(ColorSpinorField **a, const bool &reset) const {
-    if (reset) {
-      delete *a;
-      *a = nullptr;
-    }
-  }
-
 #define flip(x) (x) = ((x) == QUDA_DAG_YES ? QUDA_DAG_NO : QUDA_DAG_YES)
 
-  void Dirac::Mdag(ColorSpinorField &out, const ColorSpinorField &in) const
+  void Dirac::Mdag(cvector_ref<ColorSpinorField> &out, cvector_ref<const ColorSpinorField> &in) const
   {
     flip(dagger);
     M(out, in);
     flip(dagger);
   }
 
-  void Dirac::MMdag(ColorSpinorField &out, const ColorSpinorField &in) const
+  void Dirac::MMdag(cvector_ref<ColorSpinorField> &out, cvector_ref<const ColorSpinorField> &in) const
   {
     flip(dagger);
     MdagM(out, in);
@@ -105,46 +99,46 @@ namespace quda {
 
 #undef flip
 
-  void Dirac::checkParitySpinor(const ColorSpinorField &out, const ColorSpinorField &in) const
+  void Dirac::checkParitySpinor(cvector_ref<const ColorSpinorField> &out, cvector_ref<const ColorSpinorField> &in) const
   {
-    if ( (in.GammaBasis() != QUDA_UKQCD_GAMMA_BASIS || out.GammaBasis() != QUDA_UKQCD_GAMMA_BASIS) && 
-	 in.Nspin() == 4) {
-      errorQuda("CUDA Dirac operator requires UKQCD basis, out = %d, in = %d", 
-		out.GammaBasis(), in.GammaBasis());
-    }
-
-    if (in.SiteSubset() != QUDA_PARITY_SITE_SUBSET || out.SiteSubset() != QUDA_PARITY_SITE_SUBSET) {
-      errorQuda("ColorSpinorFields are not single parity: in = %d, out = %d", 
-		in.SiteSubset(), out.SiteSubset());
-    }
-
-    if (!static_cast<const cudaColorSpinorField&>(in).isNative()) errorQuda("Input field is not in native order");
-    if (!static_cast<const cudaColorSpinorField&>(out).isNative()) errorQuda("Output field is not in native order");
-
-    if (out.Ndim() != 5) {
-      if ((out.Volume() != gauge->Volume() && out.SiteSubset() == QUDA_FULL_SITE_SUBSET) ||
-	  (out.Volume() != gauge->VolumeCB() && out.SiteSubset() == QUDA_PARITY_SITE_SUBSET) ) {
-        errorQuda("Spinor volume %lu doesn't match gauge volume %lu", out.Volume(), gauge->VolumeCB());
+    for (auto i = 0u; i < out.size(); i++) {
+      if ((in[i].GammaBasis() != QUDA_UKQCD_GAMMA_BASIS || out[i].GammaBasis() != QUDA_UKQCD_GAMMA_BASIS)
+          && in[i].Nspin() == 4) {
+        errorQuda("Dirac operator requires UKQCD basis, out = %d, in = %d", out[i].GammaBasis(), in[i].GammaBasis());
       }
-    } else {
-      // Domain wall fermions, compare 4d volumes not 5d
-      if ((out.Volume()/out.X(4) != gauge->Volume() && out.SiteSubset() == QUDA_FULL_SITE_SUBSET) ||
-	  (out.Volume()/out.X(4) != gauge->VolumeCB() && out.SiteSubset() == QUDA_PARITY_SITE_SUBSET) ) {
-        errorQuda("Spinor volume %lu doesn't match gauge volume %lu", out.Volume(), gauge->VolumeCB());
+
+      if (in[i].SiteSubset() != QUDA_PARITY_SITE_SUBSET || out[i].SiteSubset() != QUDA_PARITY_SITE_SUBSET) {
+        errorQuda("ColorSpinorFields are not single parity: in = %d, out = %d", in[i].SiteSubset(), out[i].SiteSubset());
+      }
+
+      if (out[i].Ndim() != 5) {
+        if ((out[i].Volume() != gauge->Volume() && out[i].SiteSubset() == QUDA_FULL_SITE_SUBSET)
+            || (out[i].Volume() != gauge->VolumeCB() && out[i].SiteSubset() == QUDA_PARITY_SITE_SUBSET)) {
+          errorQuda("Spinor volume %lu doesn't match gauge volume %lu", out[i].Volume(), gauge->VolumeCB());
+        }
+      } else {
+        // Domain wall fermions, compare 4d volumes not 5d
+        if ((out[i].Volume() / out[i].X(4) != gauge->Volume() && out[i].SiteSubset() == QUDA_FULL_SITE_SUBSET)
+            || (out[i].Volume() / out[i].X(4) != gauge->VolumeCB() && out[i].SiteSubset() == QUDA_PARITY_SITE_SUBSET)) {
+          errorQuda("Spinor volume %lu doesn't match gauge volume %lu", out[i].Volume(), gauge->VolumeCB());
+        }
       }
     }
   }
 
-  void Dirac::checkFullSpinor(const ColorSpinorField &out, const ColorSpinorField &in) const
+  void Dirac::checkFullSpinor(cvector_ref<const ColorSpinorField> &out, cvector_ref<const ColorSpinorField> &in) const
   {
-    if (in.SiteSubset() != QUDA_FULL_SITE_SUBSET || out.SiteSubset() != QUDA_FULL_SITE_SUBSET) {
-      errorQuda("ColorSpinorFields are not full fields: in = %d, out = %d", 
-		in.SiteSubset(), out.SiteSubset());
-    } 
+    for (auto i = 0u; i < out.size(); i++) {
+      if (in[i].SiteSubset() != QUDA_FULL_SITE_SUBSET || out[i].SiteSubset() != QUDA_FULL_SITE_SUBSET) {
+        errorQuda("ColorSpinorFields are not full fields: in = %d, out = %d", in[i].SiteSubset(), out[i].SiteSubset());
+      }
+    }
   }
 
-  void Dirac::checkSpinorAlias(const ColorSpinorField &a, const ColorSpinorField &b) const {
-    if (a.V() == b.V()) errorQuda("Aliasing pointers");
+  void Dirac::checkSpinorAlias(cvector_ref<const ColorSpinorField> &a, cvector_ref<const ColorSpinorField> &b) const
+  {
+    for (auto i = 0u; i < a.size(); i++)
+      if (a[i].data() == b[i].data()) errorQuda("Aliasing pointers");
   }
 
   // Dirac operator factory
@@ -159,15 +153,15 @@ namespace quda {
     } else if (param.type == QUDA_CLOVER_DIRAC) {
       if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracClover operator\n");
       return new DiracClover(param);
+    } else if (param.type == QUDA_CLOVERPC_DIRAC) {
+      if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracCloverPC operator\n");
+      return new DiracCloverPC(param);
     } else if (param.type == QUDA_CLOVER_HASENBUSCH_TWIST_DIRAC) {
       if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracCloverHasenbuschTwist operator\n");
       return new DiracCloverHasenbuschTwist(param);
     } else if (param.type == QUDA_CLOVER_HASENBUSCH_TWISTPC_DIRAC) {
       if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracCloverHasenbuschTwistPC operator\n");
       return new DiracCloverHasenbuschTwistPC(param);
-    } else if (param.type == QUDA_CLOVERPC_DIRAC) {
-      if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracCloverPC operator\n");
-      return new DiracCloverPC(param);
     } else if (param.type == QUDA_DOMAIN_WALL_DIRAC) {
       if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracDomainWall operator\n");
       return new DiracDomainWall(param);
@@ -212,29 +206,33 @@ namespace quda {
       return new DiracImprovedStaggeredKD(param);
     } else if (param.type == QUDA_TWISTED_CLOVER_DIRAC) {
       if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracTwistedClover operator (%d flavor(s))\n", param.Ls);
-      if (param.Ls == 1) {
-	return new DiracTwistedClover(param, 4);
-      } else { 
-	errorQuda("Cannot create DiracTwistedClover operator for %d flavors\n", param.Ls);
+      switch (param.Ls) {
+      case 1: return new DiracTwistedClover(param, 4);
+      case 2: return new DiracTwistedClover(param, 5);
+      default: errorQuda("Unexpected Ls = %d", param.Ls);
       }
     } else if (param.type == QUDA_TWISTED_CLOVERPC_DIRAC) {
       if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracTwistedCloverPC operator (%d flavor(s))\n", param.Ls);
-      if (param.Ls == 1) {
-	return new DiracTwistedCloverPC(param, 4);
-      } else {
-	errorQuda("Cannot create DiracTwistedCloverPC operator for %d flavors\n", param.Ls);
+      switch (param.Ls) {
+      case 1: return new DiracTwistedCloverPC(param, 4);
+      case 2: return new DiracTwistedCloverPC(param, 5);
+      default: errorQuda("Unexpected Ls = %d", param.Ls);
       }
     } else if (param.type == QUDA_TWISTED_MASS_DIRAC) {
       if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracTwistedMass operator (%d flavor(s))\n", param.Ls);
-        if (param.Ls == 1) return new DiracTwistedMass(param, 4);
-        else return new DiracTwistedMass(param, 5);
+      switch (param.Ls) {
+      case 1: return new DiracTwistedMass(param, 4);
+      case 2: return new DiracTwistedMass(param, 5);
+      default: errorQuda("Unexpected Ls = %d", param.Ls);
+      }
     } else if (param.type == QUDA_TWISTED_MASSPC_DIRAC) {
       if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
         printfQuda("Creating a DiracTwistedMassPC operator (%d flavor(s))\n", param.Ls);
-      if (param.Ls == 1)
-        return new DiracTwistedMassPC(param, 4);
-      else
-        return new DiracTwistedMassPC(param, 5);
+      switch (param.Ls) {
+      case 1: return new DiracTwistedMassPC(param, 4);
+      case 2: return new DiracTwistedMassPC(param, 5);
+      default: errorQuda("Unexpected Ls = %d", param.Ls);
+      }
     } else if (param.type == QUDA_COARSE_DIRAC) {
       if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printfQuda("Creating a DiracCoarse operator\n");
       return new DiracCoarse(param);
@@ -256,57 +254,279 @@ namespace quda {
 
     return nullptr;
   }
-  
-  // Count the number of stencil applications per dslash application.
-  int Dirac::getStencilSteps() const
+
+  bool Dirac::is_wilson_type(QudaDiracType type)
   {
-    int steps = 0;
-    switch (type)
-    {
-      case QUDA_COARSE_DIRAC: // single fused operator
-      case QUDA_GAUGE_LAPLACE_DIRAC:
-      case QUDA_GAUGE_COVDEV_DIRAC:
-	steps = 1;
-	break;
-      case QUDA_WILSON_DIRAC:
-      case QUDA_CLOVER_DIRAC:
-      case QUDA_CLOVER_HASENBUSCH_TWIST_DIRAC:
-      case QUDA_DOMAIN_WALL_DIRAC:
-      case QUDA_MOBIUS_DOMAIN_WALL_DIRAC:
-      case QUDA_STAGGERED_DIRAC:
-      case QUDA_ASQTAD_DIRAC:
-      case QUDA_TWISTED_CLOVER_DIRAC:
-      case QUDA_TWISTED_MASS_DIRAC:
-        steps = 2; // For D_{eo} and D_{oe} piece.
-        break;
-      case QUDA_WILSONPC_DIRAC:
-      case QUDA_CLOVERPC_DIRAC:
-      case QUDA_CLOVER_HASENBUSCH_TWISTPC_DIRAC:
-      case QUDA_DOMAIN_WALLPC_DIRAC:
-      case QUDA_DOMAIN_WALL_4DPC_DIRAC:
-      case QUDA_MOBIUS_DOMAIN_WALLPC_DIRAC:
-      case QUDA_STAGGEREDPC_DIRAC:
-      case QUDA_ASQTADPC_DIRAC:
-      case QUDA_TWISTED_CLOVERPC_DIRAC:
-      case QUDA_TWISTED_MASSPC_DIRAC:
-      case QUDA_COARSEPC_DIRAC:
-      case QUDA_GAUGE_LAPLACEPC_DIRAC:
-        steps = 2;
-        break;
-	  default:
-	    errorQuda("Unsupported Dslash type %d.\n", type);
-        steps = 0;
-        break;
+    switch (type) {
+    case QUDA_WILSON_DIRAC:
+    case QUDA_WILSONPC_DIRAC:
+    case QUDA_CLOVER_DIRAC:
+    case QUDA_CLOVERPC_DIRAC:
+    case QUDA_CLOVER_HASENBUSCH_TWIST_DIRAC:
+    case QUDA_CLOVER_HASENBUSCH_TWISTPC_DIRAC:
+    case QUDA_TWISTED_CLOVER_DIRAC:
+    case QUDA_TWISTED_CLOVERPC_DIRAC:
+    case QUDA_TWISTED_MASS_DIRAC:
+    case QUDA_TWISTED_MASSPC_DIRAC: return true;
+    case QUDA_DOMAIN_WALL_DIRAC:
+    case QUDA_DOMAIN_WALLPC_DIRAC:
+    case QUDA_DOMAIN_WALL_4D_DIRAC:
+    case QUDA_DOMAIN_WALL_4DPC_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALL_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALL_EOFA_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_EOFA_DIRAC:
+    case QUDA_STAGGERED_DIRAC:
+    case QUDA_STAGGEREDPC_DIRAC:
+    case QUDA_STAGGEREDKD_DIRAC:
+    case QUDA_ASQTAD_DIRAC:
+    case QUDA_ASQTADPC_DIRAC:
+    case QUDA_ASQTADKD_DIRAC:
+    case QUDA_COARSE_DIRAC:
+    case QUDA_COARSEPC_DIRAC:
+    case QUDA_GAUGE_COVDEV_DIRAC:
+    case QUDA_GAUGE_LAPLACE_DIRAC:
+    case QUDA_GAUGE_LAPLACEPC_DIRAC: return false;
+    default: errorQuda("Invalid QudaDiracType %d", type); break;
     }
-    
-    return steps; 
+    return false;
+  }
+
+  bool Dirac::is_wilson_type(QudaDslashType type)
+  {
+    switch (type) {
+    case QUDA_WILSON_DSLASH:
+    case QUDA_CLOVER_WILSON_DSLASH:
+    case QUDA_CLOVER_HASENBUSCH_TWIST_DSLASH:
+    case QUDA_TWISTED_MASS_DSLASH:
+    case QUDA_TWISTED_CLOVER_DSLASH: return true;
+    case QUDA_DOMAIN_WALL_DSLASH:
+    case QUDA_DOMAIN_WALL_4D_DSLASH:
+    case QUDA_MOBIUS_DWF_DSLASH:
+    case QUDA_MOBIUS_DWF_EOFA_DSLASH:
+    case QUDA_STAGGERED_DSLASH:
+    case QUDA_ASQTAD_DSLASH:
+    case QUDA_LAPLACE_DSLASH:
+    case QUDA_COVDEV_DSLASH: return false;
+    default: errorQuda("Invalid QudaDslashType %d", type); break;
+    }
+    return false;
+  }
+
+  bool Dirac::is_staggered_type(QudaDiracType type)
+  {
+    switch (type) {
+    case QUDA_STAGGERED_DIRAC:
+    case QUDA_STAGGEREDPC_DIRAC:
+    case QUDA_STAGGEREDKD_DIRAC:
+    case QUDA_ASQTAD_DIRAC:
+    case QUDA_ASQTADPC_DIRAC:
+    case QUDA_ASQTADKD_DIRAC: return true;
+    case QUDA_WILSON_DIRAC:
+    case QUDA_WILSONPC_DIRAC:
+    case QUDA_CLOVER_DIRAC:
+    case QUDA_CLOVERPC_DIRAC:
+    case QUDA_CLOVER_HASENBUSCH_TWIST_DIRAC:
+    case QUDA_CLOVER_HASENBUSCH_TWISTPC_DIRAC:
+    case QUDA_TWISTED_CLOVER_DIRAC:
+    case QUDA_TWISTED_CLOVERPC_DIRAC:
+    case QUDA_TWISTED_MASS_DIRAC:
+    case QUDA_TWISTED_MASSPC_DIRAC:
+    case QUDA_DOMAIN_WALL_DIRAC:
+    case QUDA_DOMAIN_WALLPC_DIRAC:
+    case QUDA_DOMAIN_WALL_4D_DIRAC:
+    case QUDA_DOMAIN_WALL_4DPC_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALL_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALL_EOFA_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_EOFA_DIRAC:
+    case QUDA_COARSE_DIRAC:
+    case QUDA_COARSEPC_DIRAC:
+    case QUDA_GAUGE_COVDEV_DIRAC:
+    case QUDA_GAUGE_LAPLACE_DIRAC:
+    case QUDA_GAUGE_LAPLACEPC_DIRAC: return false;
+    default: errorQuda("Invalid QudaDiracType %d", type); break;
+    }
+    return false;
+  }
+
+  bool Dirac::is_staggered_type(QudaDslashType type)
+  {
+    switch (type) {
+    case QUDA_STAGGERED_DSLASH:
+    case QUDA_ASQTAD_DSLASH: return true;
+    case QUDA_WILSON_DSLASH:
+    case QUDA_CLOVER_WILSON_DSLASH:
+    case QUDA_CLOVER_HASENBUSCH_TWIST_DSLASH:
+    case QUDA_TWISTED_MASS_DSLASH:
+    case QUDA_TWISTED_CLOVER_DSLASH:
+    case QUDA_DOMAIN_WALL_DSLASH:
+    case QUDA_DOMAIN_WALL_4D_DSLASH:
+    case QUDA_MOBIUS_DWF_DSLASH:
+    case QUDA_MOBIUS_DWF_EOFA_DSLASH:
+    case QUDA_LAPLACE_DSLASH:
+    case QUDA_COVDEV_DSLASH: return false;
+    default: errorQuda("Invalid QudaDslashType %d", type); break;
+    }
+    return false;
+  }
+
+  bool Dirac::is_asqtad(QudaDiracType type)
+  {
+    switch (type) {
+    case QUDA_ASQTAD_DIRAC:
+    case QUDA_ASQTADPC_DIRAC:
+    case QUDA_ASQTADKD_DIRAC: return true;
+    case QUDA_WILSON_DIRAC:
+    case QUDA_WILSONPC_DIRAC:
+    case QUDA_CLOVER_DIRAC:
+    case QUDA_CLOVERPC_DIRAC:
+    case QUDA_CLOVER_HASENBUSCH_TWIST_DIRAC:
+    case QUDA_CLOVER_HASENBUSCH_TWISTPC_DIRAC:
+    case QUDA_TWISTED_CLOVER_DIRAC:
+    case QUDA_TWISTED_CLOVERPC_DIRAC:
+    case QUDA_TWISTED_MASS_DIRAC:
+    case QUDA_TWISTED_MASSPC_DIRAC:
+    case QUDA_DOMAIN_WALL_DIRAC:
+    case QUDA_DOMAIN_WALLPC_DIRAC:
+    case QUDA_DOMAIN_WALL_4D_DIRAC:
+    case QUDA_DOMAIN_WALL_4DPC_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALL_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALL_EOFA_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_EOFA_DIRAC:
+    case QUDA_STAGGERED_DIRAC:
+    case QUDA_STAGGEREDPC_DIRAC:
+    case QUDA_STAGGEREDKD_DIRAC:
+    case QUDA_COARSE_DIRAC:
+    case QUDA_COARSEPC_DIRAC:
+    case QUDA_GAUGE_COVDEV_DIRAC:
+    case QUDA_GAUGE_LAPLACE_DIRAC:
+    case QUDA_GAUGE_LAPLACEPC_DIRAC: return false;
+    default: errorQuda("Invalid QudaDiracType %d", type); break;
+    }
+    return false;
+  }
+
+  bool Dirac::is_asqtad(QudaDslashType type)
+  {
+    switch (type) {
+    case QUDA_ASQTAD_DSLASH: return true;
+    case QUDA_WILSON_DSLASH:
+    case QUDA_CLOVER_WILSON_DSLASH:
+    case QUDA_CLOVER_HASENBUSCH_TWIST_DSLASH:
+    case QUDA_TWISTED_MASS_DSLASH:
+    case QUDA_TWISTED_CLOVER_DSLASH:
+    case QUDA_DOMAIN_WALL_DSLASH:
+    case QUDA_DOMAIN_WALL_4D_DSLASH:
+    case QUDA_MOBIUS_DWF_DSLASH:
+    case QUDA_MOBIUS_DWF_EOFA_DSLASH:
+    case QUDA_STAGGERED_DSLASH:
+    case QUDA_LAPLACE_DSLASH:
+    case QUDA_COVDEV_DSLASH: return false;
+    default: errorQuda("Invalid QudaDslashType %d", type); break;
+    }
+    return false;
+  }
+
+  bool Dirac::is_dwf(QudaDiracType type)
+  {
+    switch (type) {
+    case QUDA_DOMAIN_WALL_DIRAC:
+    case QUDA_DOMAIN_WALLPC_DIRAC:
+    case QUDA_DOMAIN_WALL_4D_DIRAC:
+    case QUDA_DOMAIN_WALL_4DPC_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALL_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALL_EOFA_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_EOFA_DIRAC: return true;
+    case QUDA_WILSON_DIRAC:
+    case QUDA_WILSONPC_DIRAC:
+    case QUDA_CLOVER_DIRAC:
+    case QUDA_CLOVERPC_DIRAC:
+    case QUDA_CLOVER_HASENBUSCH_TWIST_DIRAC:
+    case QUDA_CLOVER_HASENBUSCH_TWISTPC_DIRAC:
+    case QUDA_TWISTED_CLOVER_DIRAC:
+    case QUDA_TWISTED_CLOVERPC_DIRAC:
+    case QUDA_TWISTED_MASS_DIRAC:
+    case QUDA_TWISTED_MASSPC_DIRAC:
+    case QUDA_STAGGERED_DIRAC:
+    case QUDA_STAGGEREDPC_DIRAC:
+    case QUDA_STAGGEREDKD_DIRAC:
+    case QUDA_ASQTAD_DIRAC:
+    case QUDA_ASQTADPC_DIRAC:
+    case QUDA_ASQTADKD_DIRAC:
+    case QUDA_COARSE_DIRAC:
+    case QUDA_COARSEPC_DIRAC:
+    case QUDA_GAUGE_COVDEV_DIRAC:
+    case QUDA_GAUGE_LAPLACE_DIRAC:
+    case QUDA_GAUGE_LAPLACEPC_DIRAC: return false;
+    default: errorQuda("Invalid QudaDiracType %d", type); break;
+    }
+    return false;
+  }
+
+  bool Dirac::is_dwf(QudaDslashType type)
+  {
+    switch (type) {
+    case QUDA_DOMAIN_WALL_DSLASH:
+    case QUDA_DOMAIN_WALL_4D_DSLASH:
+    case QUDA_MOBIUS_DWF_DSLASH:
+    case QUDA_MOBIUS_DWF_EOFA_DSLASH: return true;
+    case QUDA_WILSON_DSLASH:
+    case QUDA_CLOVER_WILSON_DSLASH:
+    case QUDA_CLOVER_HASENBUSCH_TWIST_DSLASH:
+    case QUDA_TWISTED_MASS_DSLASH:
+    case QUDA_TWISTED_CLOVER_DSLASH:
+    case QUDA_STAGGERED_DSLASH:
+    case QUDA_ASQTAD_DSLASH:
+    case QUDA_LAPLACE_DSLASH:
+    case QUDA_COVDEV_DSLASH: return false;
+    default: errorQuda("Invalid QudaDslashType %d", type); break;
+    }
+    return false;
+  }
+
+  QudaDslashType Dirac::dirac_to_dslash_type(QudaDiracType type)
+  {
+    switch (type) {
+    case QUDA_WILSON_DIRAC:
+    case QUDA_WILSONPC_DIRAC: return QUDA_WILSON_DSLASH;
+    case QUDA_CLOVER_DIRAC:
+    case QUDA_CLOVERPC_DIRAC: return QUDA_CLOVER_WILSON_DSLASH;
+    case QUDA_CLOVER_HASENBUSCH_TWIST_DIRAC:
+    case QUDA_CLOVER_HASENBUSCH_TWISTPC_DIRAC: return QUDA_CLOVER_HASENBUSCH_TWIST_DSLASH;
+    case QUDA_TWISTED_CLOVER_DIRAC:
+    case QUDA_TWISTED_CLOVERPC_DIRAC: return QUDA_TWISTED_CLOVER_DSLASH;
+    case QUDA_TWISTED_MASS_DIRAC:
+    case QUDA_TWISTED_MASSPC_DIRAC: return QUDA_TWISTED_MASS_DSLASH;
+    case QUDA_DOMAIN_WALL_DIRAC:
+    case QUDA_DOMAIN_WALLPC_DIRAC: return QUDA_DOMAIN_WALL_DSLASH;
+    case QUDA_DOMAIN_WALL_4D_DIRAC:
+    case QUDA_DOMAIN_WALL_4DPC_DIRAC: return QUDA_DOMAIN_WALL_4D_DSLASH;
+    case QUDA_MOBIUS_DOMAIN_WALL_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_DIRAC: return QUDA_MOBIUS_DWF_DSLASH;
+    case QUDA_MOBIUS_DOMAIN_WALL_EOFA_DIRAC:
+    case QUDA_MOBIUS_DOMAIN_WALLPC_EOFA_DIRAC: return QUDA_MOBIUS_DWF_EOFA_DSLASH;
+    case QUDA_STAGGERED_DIRAC:
+    case QUDA_STAGGEREDPC_DIRAC:
+    case QUDA_STAGGEREDKD_DIRAC: return QUDA_STAGGERED_DSLASH;
+    case QUDA_ASQTAD_DIRAC:
+    case QUDA_ASQTADPC_DIRAC:
+    case QUDA_ASQTADKD_DIRAC: return QUDA_ASQTAD_DSLASH;
+    case QUDA_GAUGE_COVDEV_DIRAC: return QUDA_COVDEV_DSLASH;
+    case QUDA_GAUGE_LAPLACE_DIRAC:
+    case QUDA_GAUGE_LAPLACEPC_DIRAC: return QUDA_LAPLACE_DSLASH;
+    case QUDA_COARSE_DIRAC:
+    case QUDA_COARSEPC_DIRAC: return QUDA_INVALID_DSLASH;
+    default: errorQuda("Invalid QudaDiracType %d", type); break;
+    }
+    return QUDA_INVALID_DSLASH;
   }
 
   void Dirac::prefetch(QudaFieldLocation mem_space, qudaStream_t stream) const
   {
     if (gauge) gauge->prefetch(mem_space, stream);
-    if (tmp1) tmp1->prefetch(mem_space, stream);
-    if (tmp2) tmp2->prefetch(mem_space, stream);
   }
 
 } // namespace quda

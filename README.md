@@ -48,7 +48,7 @@ using releases 10.1 through 11.4 of the CUDA toolkit.  Earlier versions
 of the CUDA toolkit will not work, and we highly recommend the use of
 11.x.  QUDA has been tested in conjunction with x86-64, IBM
 POWER8/POWER9 and ARM CPUs.  Both GCC and Clang host compilers are
-supported, with the mininum recommended versions being 7.x and 6, respectively.
+supported, with the minimum recommended versions being 7.x and 6, respectively.
 CMake 3.15 or greater to required to build QUDA.
 
 See also Known Issues below.
@@ -77,7 +77,7 @@ See also "Known Issues" below.
 It is recommended to build QUDA in a separate directory from the
 source directory.  For instructions on how to build QUDA using cmake
 see this page
-https://github.com/lattice/quda/wiki/Building-QUDA-with-cmake. Note
+https://github.com/lattice/quda/wiki/QUDA-Build-With-CMake. Note
 that this requires cmake version 3.15 or later. You can obtain cmake
 from https://cmake.org/download/. On Linux the binary tar.gz archives
 unpack into a cmake directory and usually run fine from that
@@ -210,6 +210,8 @@ reports are especially welcome.
 
 ## Acknowledging QUDA:
 
+[![DOI](https://zenodo.org/badge/1300564.svg)](https://zenodo.org/badge/latestdoi/1300564)
+  
 If you find this software useful in your work, please cite:
 
 M. A. Clark, R. Babich, K. Barros, R. Brower, and C. Rebbi, "Solving
@@ -259,27 +261,39 @@ Advanced Scientific Computing (PASC21) [arXiv:2104.05615[hep-lat]].
 *  Carleton DeTar (Utah University)
 *  Justin Foley (NIH)
 *  Arjun Gambhir (William and Mary)
+*  Marco Garofalo (HISKP, University of Bonn)
 *  Joel Giedt (Rensselaer Polytechnic Institute) 
 *  Steven Gottlieb (Indiana University) 
+*  Anthony Grebe (Fermilab)
 *  Kyriakos Hadjiyiannakou (Cyprus)
+*  Ben Hoerz (Intel)
 *  Dean Howarth (Lawrence Livermore Lab, Lawrence Berkeley Lab)
+*  Hwancheol Jeong (Indiana University)
+*  Xiangyu Jiang (ITP, Chinese Academy of Sciences)
 *  Balint Joo (OLCF, Oak Ridge National Laboratory, formerly Jefferson Lab)
 *  Hyung-Jin Kim (Samsung Advanced Institute of Technology)
-*  Bartek Kostrzewa (Bonn)
+*  Bartosz Kostrzewa (HPC/A-Lab, University of Bonn)
+*  Damon McDougall (AMD)
+*  Colin Morningstar (Carnegie Mellon University)
 *  James Osborn (Argonne National Laboratory)
+*  Ferenc Pittler (Cyprus)
 *  Claudio Rebbi (Boston University) 
 *  Eloy Romero (William and Mary)
 *  Hauke Sandmeyer (Bielefeld)
 *  Mario Schröck (INFN)
+*  Aniket Sen (HISKP, University of Bonn)
 *  Guochun Shi (NCSA)
+*  James Simone (Fermi National Accelerator Laboratory)
 *  Alexei Strelchenko (Fermi National Accelerator Laboratory)
 *  Jiqun Tu (NVIDIA)
+*  Carsten Urbach (HISKP, University of Bonn)
 *  Alejandro Vaquero (Utah University)
+*  Michael Wagman (Fermilab)
 *  Mathias Wagner (NVIDIA)
 *  Andre Walker-Loud (Lawrence Berkley Laboratory)
 *  Evan Weinberg (NVIDIA)
 *  Frank Winter (Jefferson Lab)
-*  Yi-Bo Yang (Chinese Academy of Sciences)
+*  Yi-Bo Yang (ITP, Chinese Academy of Sciences)
 
 
 Portions of this software were developed at the Innovative Systems Lab,

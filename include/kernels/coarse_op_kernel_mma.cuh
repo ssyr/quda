@@ -7,14 +7,35 @@
 #include <index_helper.cuh>
 #include <linalg.cuh>
 #include <matrix_tile.cuh>
-
 #include <mma_tensor_op/gemm.cuh>
+#include <block_reduce_helper.h>
+#include <kernel.h>
+#include <kernels/coarse_op_kernel.cuh>
 
 namespace quda
 {
 
   namespace mma
   {
+
+    template <typename Arg, int dim_, QudaDirection dir_, int bM_, int bN_, int bK_, int block_y_, int block_z_,
+              int min_blocks_ = 1>
+    struct mmaArg : Arg {
+      static constexpr int dim = dim_;
+      static constexpr QudaDirection dir = dir_;
+      static constexpr int bM = bM_;
+      static constexpr int bN = bN_;
+      static constexpr int bK = bK_;
+      static constexpr int block_y = block_y_;
+      static constexpr int block_z = block_z_;
+      static constexpr int block_dim = block_y * block_z;
+      static constexpr int min_blocks = min_blocks_;
+
+      mmaArg(const Arg &arg) : Arg(arg)
+      {
+        static_assert(Arg::from_coarse, "The MMA implementation is only for from_coarse == true.");
+      }
+    };
 
     // This is the MMA implementation of the computeUV and computeVUV kernels for from_coarse == true.
 
@@ -25,13 +46,17 @@ namespace quda
         Calculates the matrix UV^{s,c'}_mu(x) = \sum_c U^{c}_mu(x) * V^{s,c}_mu(x+mu)
         Where: mu = dir, s = fine spin, c' = coarse color, c = fine color
        */
-      template <int dim, QudaDirection dir, int bM, int bN, int bK, int block_y, int block_z, typename Wtype, typename Arg>
-      __device__ __host__ inline void computeUV(Arg &arg, const Wtype &Wacc, int parity, int x_cb)
+      template <typename Wtype, typename Arg>
+      __device__ __host__ inline auto computeUV(Arg &arg, const Wtype &Wacc, int parity, int x_cb, int m_offset,
+                                                int n_offset)
       {
+        using real = typename Arg::Float;
         constexpr int fineSpin = Arg::fineSpin;
 
         int coord[4];
         getCoords(coord, x_cb, arg.x_size, parity);
+
+        real uvMax = 0.0;
 
         constexpr int nFace = 1;
 
@@ -39,7 +64,6 @@ namespace quda
 
         constexpr bool a_dagger = false;
         constexpr bool b_dagger = false;
-        constexpr bool compute_max_only = false;
 
         // Here instead of fineColor x coarseColor x fineColor,
         // we do (fineColor * fineSpin) x coarseColor x fineColor
@@ -52,74 +76,118 @@ namespace quda
         constexpr int ldb = N;
         constexpr int ldc = N;
 
-        using Config = MmaConfig<M, N, K, lda, ldb, ldc, bM, bN, bK, block_y, block_z>;
+        using mma_t = typename mma::mg_mma_dispatch_t<typename Arg::Float>::type;
+        using Config = MmaConfig<mma_t, M, N, K, lda, ldb, ldc, Arg::bM, Arg::bN, Arg::bK, Arg::block_y, Arg::block_z>;
 
-        if (arg.comm_dim[dim] && (coord[dim] + nFace >= arg.x_size[dim])) {
-
-          int ghost_idx = ghostFaceIndex<1>(coord, arg.x_size, dim, nFace);
+        if (Arg::dir == QUDA_IN_PLACE) {
 
           for (int s_col = 0; s_col < fineSpin; s_col++) {
 
-            auto a = arg.U.wrap(dim + (dir == QUDA_FORWARDS ? 4 : 0), parity, x_cb, 0, s_col);
-            auto b = Wacc.wrap_ghost(dim, 1, (parity + 1) & 1, ghost_idx, s_col);
-            auto c = arg.UV.wrap(parity, x_cb, s_col * fineSpin);
+            auto a = arg.C(0, parity, x_cb, 0, s_col, 0, 0);
+            auto b = Wacc(parity, x_cb, s_col, 0, 0);
+            auto c = arg.UV(parity, x_cb, s_col * fineSpin, 0, 0);
 
-            Config::template perform_mma<a_dagger, b_dagger, compute_max_only>(a, b, c, 0, 0);
+            uvMax = fmax(
+              uvMax, Config::template perform_mma<a_dagger, b_dagger, Arg::compute_max>(a, b, c, m_offset, n_offset));
+          }
+
+        } else if (arg.comm_dim[Arg::dim] && (coord[Arg::dim] + nFace >= arg.x_size[Arg::dim])) {
+
+          int ghost_idx = ghostFaceIndex<1>(coord, arg.x_size, Arg::dim, nFace);
+
+          for (int s_col = 0; s_col < fineSpin; s_col++) {
+
+            auto a = arg.U(Arg::dim + (Arg::dir == QUDA_FORWARDS ? 4 : 0), parity, x_cb, 0, s_col, 0, 0);
+            auto b = Wacc.Ghost(Arg::dim, 1, (parity + 1) & 1, ghost_idx, s_col, 0, 0);
+            auto c = arg.UV(parity, x_cb, s_col * fineSpin, 0, 0);
+
+            uvMax = fmax(
+              uvMax, Config::template perform_mma<a_dagger, b_dagger, Arg::compute_max>(a, b, c, m_offset, n_offset));
           }
 
         } else {
 
-          int y_cb = linkIndexP1(coord, arg.x_size, dim);
+          int y_cb = linkIndexP1(coord, arg.x_size, Arg::dim);
 
           for (int s_col = 0; s_col < fineSpin; s_col++) {
 
-            auto a = arg.U.wrap(dim + (dir == QUDA_FORWARDS ? 4 : 0), parity, x_cb, 0, s_col);
-            auto b = Wacc.wrap((parity + 1) & 1, y_cb, s_col);
-            auto c = arg.UV.wrap(parity, x_cb, s_col * fineSpin);
+            auto a = arg.U(Arg::dim + (Arg::dir == QUDA_FORWARDS ? 4 : 0), parity, x_cb, 0, s_col, 0, 0);
+            auto b = Wacc((parity + 1) & 1, y_cb, s_col, 0, 0);
+            auto c = arg.UV(parity, x_cb, s_col * fineSpin, 0, 0);
 
-            Config::template perform_mma<a_dagger, b_dagger, compute_max_only>(a, b, c, 0, 0);
+            uvMax = fmax(
+              uvMax, Config::template perform_mma<a_dagger, b_dagger, Arg::compute_max>(a, b, c, m_offset, n_offset));
           }
         }
+
+        return uvMax;
       } // computeUV
 
     } // namespace impl
 
-    template <bool from_coarse, int dim, QudaDirection dir, int bM, int bN, int bK, int block_y, int block_z, typename Arg>
-    __global__ void __launch_bounds__(block_y *block_z, 1) ComputeUVMMA(Arg arg)
-    {
-      int x_cb = blockDim.x * blockIdx.x + threadIdx.x;
-      if (x_cb >= arg.fineVolumeCB) return;
+    template <typename Arg> struct ComputeUVMMA {
+      Arg &arg;
+      constexpr ComputeUVMMA(Arg &arg) : arg(arg) {}
+      static constexpr const char *filename() { return KERNEL_FILE; }
 
-      int parity = blockIdx.y;
+      __device__ __forceinline__ void operator()()
+      {
+        int index_x = blockDim.x * blockIdx.x + threadIdx.x;
+        int parity = blockIdx.y;
 
-      if (dir == QUDA_FORWARDS) // only for preconditioned clover is V != AV
-        impl::computeUV<dim, dir, bM, bN, bK, block_y, block_z>(arg, arg.V, parity, x_cb);
-      else
-        impl::computeUV<dim, dir, bM, bN, bK, block_y, block_z>(arg, arg.AV, parity, x_cb);
-    }
+        constexpr int M = Arg::uvTileType::m * Arg::fineSpin;
+        constexpr int N = Arg::uvTileType::n;
+        constexpr int K = Arg::uvTileType::k;
+
+        constexpr bool divide_b_no = Arg::bM < M && Arg::bK >= K && Arg::bN == N;
+
+        constexpr int t_m = divide_b_no ? 1 : (Arg::uvTileType::m * Arg::fineSpin + Arg::bM - 1) / Arg::bM;
+        constexpr int t_n = divide_b_no ? 1 : (Arg::uvTileType::n + Arg::bN - 1) / Arg::bN;
+
+        int x_cb = index_x / (t_m * t_n);
+        if (x_cb >= arg.fineVolumeCB) return;
+
+        int mn = index_x % (t_m * t_n);
+
+        int n_offset = (mn % t_n) * Arg::bN;
+        int m_offset = (mn / t_n) * Arg::bM;
+
+        using real = typename Arg::Float;
+        real max = 0.0;
+        if (Arg::dir == QUDA_FORWARDS || Arg::dir == QUDA_IN_PLACE) // only for preconditioned clover is V != AV
+          max = impl::computeUV(arg, arg.V, parity, x_cb, m_offset, n_offset);
+        else
+          max = impl::computeUV(arg, arg.AV, parity, x_cb, m_offset, n_offset);
+
+        if (Arg::compute_max) {
+          constexpr int block_dim = 3;
+          unsigned aggregate = BlockReduce<unsigned, block_dim>().Max(__float_as_uint(max));
+          if (threadIdx.y == 0 && threadIdx.z == 0) atomic_fetch_abs_max(arg.max_d, __uint_as_float(aggregate));
+        }
+      }
+    };
 
     namespace impl
     {
 
-      template <int dim, QudaDirection dir, int bM, int bN, int bK, int block_y, int block_z, typename Arg>
-      __device__ void computeVUV(Arg &arg, int parity, int x_cb)
+      template <typename Arg> __device__ void computeVUV(Arg &arg, int parity, int x_cb, int m_offset, int n_offset)
       {
-        using Float = typename Arg::Float;
-
         constexpr int fineSpin = Arg::fineSpin;
         constexpr int coarseSpin = Arg::coarseSpin;
 
         constexpr int nDim = 4;
+        constexpr int nFace = 1;
         int coord[QUDA_MAX_DIM];
         int coord_coarse[QUDA_MAX_DIM];
 
         getCoords(coord, x_cb, arg.x_size, parity);
         for (int d = 0; d < nDim; d++) coord_coarse[d] = coord[d] / arg.geo_bs[d];
 
+        constexpr bool isFromCoarseClover = Arg::dir == QUDA_IN_PLACE;
+
         // Check to see if we are on the edge of a block.  If adjacent site
         // is in same block, M = X, else M = Y
-        const bool isDiagonal
-          = ((coord[dim] + 1) % arg.x_size[dim]) / arg.geo_bs[dim] == coord_coarse[dim] ? true : false;
+        const bool isDiagonal = isFromCoarseClover || isCoarseDiagonal(coord, coord_coarse, Arg::dim, nFace, arg);
 
         int coarse_parity = 0;
 
@@ -145,25 +213,22 @@ namespace quda
         constexpr int ldb = N;
         constexpr int ldc = N * coarseSpin;
 
-        extern __shared__ half smem_ptr[];
+        using mma_t = typename mma::mg_mma_dispatch_t<typename Arg::Float>::type;
 
-        using Config = MmaConfig<M, N, K, lda, ldb, ldc, bM, bN, bK, block_y, block_z>;
+        extern __shared__ typename mma_t::compute_t smem_ptr[];
 
-        constexpr int m_offset = 0;
-        constexpr int n_offset = 0;
+        using Config = MmaConfig<mma_t, M, N, K, lda, ldb, ldc, Arg::bM, Arg::bN, Arg::bK, Arg::block_y, Arg::block_z>;
 
-        static_assert(M <= bM, "Dividing M has NOT been implemented yet.\n");
-        static_assert(N <= bN, "Dividing N has NOT been implemented yet.\n");
-        static_assert(K <= bK, "Dividing K has NOT been implemented yet.\n");
+        static_assert(K <= Arg::bK, "Dividing K has NOT been implemented yet.\n");
 
         typename Config::SmemObjA smem_obj_a_real(smem_ptr);
-        typename Config::SmemObjA smem_obj_a_imag(smem_obj_a_real.ptr + Config::smem_lda * bK);
-        typename Config::SmemObjB smem_obj_b_real(smem_obj_a_imag.ptr + Config::smem_lda * bK);
-        typename Config::SmemObjB smem_obj_b_imag(smem_obj_b_real.ptr + Config::smem_ldb * bK);
+        typename Config::SmemObjA smem_obj_a_imag(smem_obj_a_real.ptr + Config::smem_lda * Arg::bK);
+        typename Config::SmemObjB smem_obj_b_real(smem_obj_a_imag.ptr + Config::smem_lda * Arg::bK);
+        typename Config::SmemObjB smem_obj_b_imag(smem_obj_b_real.ptr + Config::smem_ldb * Arg::bK);
 
-        WarpRegisterMapping wrm((threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x);
+        typename mma_t::WarpRegisterMapping wrm((threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x);
 
-        using op_c_type = MmaOperandC<typename Config::accumuate_reg_type>;
+        using op_c_type = typename mma_t::OperandC;
 
         typename Config::ALoader a_loader;
         typename Config::BLoader b_loader;
@@ -177,7 +242,7 @@ namespace quda
         // Not unrolling to lift regiter pressure
         for (int s = 0; s < fineSpin; s++) {
 
-          auto a = arg.AV.wrap(parity, x_cb, s);
+          auto a = arg.AV(parity, x_cb, s, 0, 0);
 
           __syncthreads();
           a_loader.template g2r<Config::lda, a_dagger>(a, m_offset, 0);
@@ -186,7 +251,7 @@ namespace quda
 
           for (int s_col = 0; s_col < fineSpin; s_col++) { // which chiral block
 
-            auto b = arg.UV.wrap(parity, x_cb, s_col * fineSpin + s);
+            auto b = arg.UV(parity, x_cb, s_col * fineSpin + s, 0, 0);
 
             __syncthreads();
             b_loader.template g2r<Config::ldb, b_dagger>(b, n_offset, 0);
@@ -206,36 +271,45 @@ namespace quda
 
 #pragma unroll 1
               for (int tile_k = 0; tile_k < Config::tile_acc_dim; tile_k++) {
-                zgemm(smem_obj_a_real, smem_obj_a_imag, smem_obj_b_real, smem_obj_b_imag, op_c_real, op_c_imag,
-                      warp_row, warp_col, tile_k, wrm);
+                complex_mma<mma_t>(smem_obj_a_real, smem_obj_a_imag, smem_obj_b_real, smem_obj_b_imag, op_c_real,
+                                   op_c_imag, warp_row, warp_col, tile_k, wrm);
               }
 
-              int warp_m_offset = warp_row * MMA_M + m_offset;
-              int warp_n_offset = warp_col * MMA_N + n_offset;
+              int warp_m_offset = warp_row * mma_t::MMA_M + m_offset;
+              int warp_n_offset = warp_col * mma_t::MMA_N + n_offset;
 
-              if (!isDiagonal) {
+              if (Arg::dir == QUDA_IN_PLACE) {
+
+                auto cc = arg.X_atomic(0, coarse_parity, coarse_x_cb, s, s_col, 0, 0);
+                constexpr bool atomic_dagger = false;
+                mma_t::template store_complex<M, N, N * fineSpin, atomic_dagger>(
+                  warp_m_offset, warp_n_offset, wrm, cc, op_c_real, op_c_imag, fetch_add_atomic_t());
+
+              } else if (!isDiagonal) {
 
                 int dim_index = arg.dim_index % arg.Y_atomic.geometry;
-                auto cc = arg.Y_atomic.wrap(dim_index, coarse_parity, coarse_x_cb, s, s_col);
+                auto cc = arg.Y_atomic(dim_index, coarse_parity, coarse_x_cb, s, s_col, 0, 0);
                 constexpr bool atomic_dagger = false;
-                store_complex_atomic<M, N, N * fineSpin, atomic_dagger>(warp_m_offset, warp_n_offset, wrm, cc,
-                                                                        op_c_real, op_c_imag);
+                mma_t::template store_complex<M, N, N * fineSpin, atomic_dagger>(
+                  warp_m_offset, warp_n_offset, wrm, cc, op_c_real, op_c_imag, fetch_add_atomic_t());
 
               } else {
 
-                op_c_real.ax(-arg.kappa);
-                op_c_imag.ax(-arg.kappa);
+                if (!isFromCoarseClover) {
+                  op_c_real.ax(-arg.kappa);
+                  op_c_imag.ax(-arg.kappa);
+                }
 
-                if (dir == QUDA_BACKWARDS) {
-                  auto cc = arg.X_atomic.wrap(0, coarse_parity, coarse_x_cb, s_col, s);
+                if (Arg::dir == QUDA_BACKWARDS) {
+                  auto cc = arg.X_atomic(0, coarse_parity, coarse_x_cb, s_col, s, 0, 0);
                   constexpr bool atomic_dagger = true;
-                  store_complex_atomic<M, N, N * fineSpin, atomic_dagger>(warp_m_offset, warp_n_offset, wrm, cc,
-                                                                          op_c_real, op_c_imag);
+                  mma_t::template store_complex<M, N, N * fineSpin, atomic_dagger>(
+                    warp_m_offset, warp_n_offset, wrm, cc, op_c_real, op_c_imag, fetch_add_atomic_t());
                 } else {
-                  auto cc = arg.X_atomic.wrap(0, coarse_parity, coarse_x_cb, s, s_col);
+                  auto cc = arg.X_atomic(0, coarse_parity, coarse_x_cb, s, s_col, 0, 0);
                   constexpr bool atomic_dagger = false;
-                  store_complex_atomic<M, N, N * fineSpin, atomic_dagger>(warp_m_offset, warp_n_offset, wrm, cc,
-                                                                          op_c_real, op_c_imag);
+                  mma_t::template store_complex<M, N, N * fineSpin, atomic_dagger>(
+                    warp_m_offset, warp_n_offset, wrm, cc, op_c_real, op_c_imag, fetch_add_atomic_t());
                 }
 
                 if (!arg.bidirectional) {
@@ -244,9 +318,9 @@ namespace quda
                     op_c_imag.ax(static_cast<float>(-1.0));
                   }
                   constexpr bool atomic_dagger = false;
-                  auto cc = arg.X_atomic.wrap(0, coarse_parity, coarse_x_cb, s, s_col);
-                  store_complex_atomic<M, N, N * fineSpin, atomic_dagger>(warp_m_offset, warp_n_offset, wrm, cc,
-                                                                          op_c_real, op_c_imag);
+                  auto cc = arg.X_atomic(0, coarse_parity, coarse_x_cb, s, s_col, 0, 0);
+                  mma_t::template store_complex<M, N, N * fineSpin, atomic_dagger>(
+                    warp_m_offset, warp_n_offset, wrm, cc, op_c_real, op_c_imag, fetch_add_atomic_t());
                 }
               }
             }
@@ -256,18 +330,30 @@ namespace quda
 
     } // namespace impl
 
-    template <bool from_coarse, int dim, QudaDirection dir, int bM, int bN, int bK, int block_y, int block_z, typename Arg>
-    __global__ void __launch_bounds__(block_y *block_z, 1) ComputeVUVMMA(Arg arg)
-    {
-      static_assert(from_coarse, "The MMA implementation is only for from_coarse == true.");
+    template <typename Arg> struct ComputeVUVMMA {
+      Arg &arg;
+      constexpr ComputeVUVMMA(Arg &arg) : arg(arg) {}
+      static constexpr const char *filename() { return KERNEL_FILE; }
 
-      int parity = blockIdx.y;
+      __device__ __forceinline__ void operator()()
+      {
+        int index_x = blockDim.x * blockIdx.x + threadIdx.x;
+        int parity = blockIdx.y;
 
-      int x_cb = blockDim.x * blockIdx.x + threadIdx.x;
-      if (x_cb >= arg.fineVolumeCB) return;
+        constexpr int t_m = (Arg::vuvTileType::m + Arg::bM - 1) / Arg::bM;
+        constexpr int t_n = (Arg::vuvTileType::n + Arg::bN - 1) / Arg::bN;
 
-      impl::computeVUV<dim, dir, bM, bN, bK, block_y, block_z>(arg, parity, x_cb);
-    }
+        int x_cb = index_x / (t_m * t_n);
+        if (x_cb >= arg.fineVolumeCB) return;
+
+        int mn = index_x % (t_m * t_n);
+
+        int n_offset = (mn % t_n) * Arg::bN;
+        int m_offset = (mn / t_n) * Arg::bM;
+
+        impl::computeVUV(arg, parity, x_cb, m_offset, n_offset);
+      }
+    };
 
   } // namespace mma
 

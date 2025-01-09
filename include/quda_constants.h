@@ -32,15 +32,9 @@
 
 /**
  * @def QUDA_MAX_BLOCK_SRC
- * @brief Maximum number of sources that can be supported by the block solver
+ * @brief Maximum number of sources that can be supported by the multi-src solver
  */
-#define QUDA_MAX_BLOCK_SRC 64
-
-/**
- * @def QUDA_MAX_ARRAY
- * @brief Maximum array length used in QudaInvertParam arrays
- */
-#define QUDA_MAX_ARRAY_SIZE (QUDA_MAX_MULTI_SHIFT > QUDA_MAX_BLOCK_SRC ? QUDA_MAX_MULTI_SHIFT : QUDA_MAX_BLOCK_SRC)
+#define QUDA_MAX_MULTI_SRC 128
 
 /**
  * @def   QUDA_MAX_DWF_LS
@@ -54,10 +48,3 @@
  * increased if needed.
  */
 #define QUDA_MAX_MG_LEVEL 5
-
-/**
- * @def QUDA_MAX_MULTI_REDUCE
- * @brief Maximum number of simultaneous reductions that can take
- * place.  This number may be increased if needed.
- */
-#define QUDA_MAX_MULTI_REDUCE 1024

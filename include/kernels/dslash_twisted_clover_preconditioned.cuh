@@ -11,7 +11,7 @@ namespace quda
   struct TwistedCloverArg : WilsonArg<Float, nColor, nDim, reconstruct_> {
     using WilsonArg<Float, nColor, nDim, reconstruct_>::nSpin;
     static constexpr int length = (nSpin / (nSpin / 2)) * 2 * nColor * nColor * (nSpin / 2) * (nSpin / 2) / 2;
-    static constexpr bool dynamic_clover = dynamic_clover_inverse();
+    static constexpr bool dynamic_clover = clover::dynamic_inverse();
 
     typedef typename mapper<Float>::type real;
     typedef typename clover_mapper<Float, length>::type C;
@@ -19,15 +19,18 @@ namespace quda
     const C A2inv; // A^{-2}
     real a;        // this is the scaling factor
     real b;        // this is the twist factor
+    real b2;
 
-    TwistedCloverArg(ColorSpinorField &out, const ColorSpinorField &in, const GaugeField &U, const CloverField &A,
-                     double a, double b, bool xpay, const ColorSpinorField &x, int parity, bool dagger,
+    TwistedCloverArg(cvector_ref<ColorSpinorField> &out, cvector_ref<const ColorSpinorField> &in,
+                     const ColorSpinorField &halo, const GaugeField &U, const CloverField &A, double a, double b,
+                     bool xpay, cvector_ref<const ColorSpinorField> &x, int parity, bool dagger,
                      const int *comm_override) :
-      WilsonArg<Float, nColor, nDim, reconstruct_>(out, in, U, xpay ? 1.0 : 0.0, x, parity, dagger, comm_override),
+      WilsonArg<Float, nColor, nDim, reconstruct_>(out, in, halo, U, xpay ? 1.0 : 0.0, x, parity, dagger, comm_override),
       A(A, false),
       A2inv(A, dynamic_clover ? false : true), // if dynamic clover we don't want the inverse field
       a(a),
-      b(dagger ? -0.5 * b : 0.5 * b) // factor of 0.5 comes from basis transform
+      b(dagger ? -0.5 * b : 0.5 * b), // factor of 0.5 comes from basis transform
+      b2(0.25 * b * b)
     {
       checkPrecision(U, A);
       checkLocation(U, A);
@@ -37,8 +40,8 @@ namespace quda
   template <int nParity, bool dagger, bool xpay, KernelType kernel_type, typename Arg>
   struct twistedCloverPreconditioned : dslash_default {
 
-    Arg &arg;
-    constexpr twistedCloverPreconditioned(Arg &arg) : arg(arg) {}
+    const Arg &arg;
+    constexpr twistedCloverPreconditioned(const Arg &arg) : arg(arg) {}
     static constexpr const char *filename() { return KERNEL_FILE; } // this file name - used for run-time compilation
 
     /**
@@ -47,7 +50,7 @@ namespace quda
        - with xpay:  out(x) = M*in = (1 + a*A(x)^{-1}D) * in(x-mu)
     */
     template <KernelType mykernel_type = kernel_type>
-    __device__ __host__ __forceinline__ void operator()(int idx, int s, int parity)
+    __device__ __host__ __forceinline__ void operator()(int idx, int src_idx, int parity)
     {
       using namespace linalg; // for Cholesky
       typedef typename mapper<typename Arg::Float>::type real;
@@ -65,11 +68,11 @@ namespace quda
       Vector out;
 
       // defined in dslash_wilson.cuh
-      applyWilson<nParity, dagger, mykernel_type>(out, arg, coord, parity, idx, thread_dim, active);
+      applyWilson<nParity, dagger, mykernel_type>(out, arg, coord, parity, idx, thread_dim, active, src_idx);
 
       if (mykernel_type != INTERIOR_KERNEL && active) {
         // if we're not the interior kernel, then we must sum the partial
-        Vector x = arg.out(coord.x_cb, my_spinor_parity);
+        Vector x = arg.out[src_idx](coord.x_cb, my_spinor_parity);
         out += x;
       }
 
@@ -81,35 +84,34 @@ namespace quda
 #pragma unroll
         for (int chirality = 0; chirality < 2; chirality++) {
 
-          const complex<real> b(0.0, chirality == 0 ? static_cast<real>(arg.b) : -static_cast<real>(arg.b));
+          const complex<real> b(0.0, chirality == 0 ? arg.b : -arg.b);
           Mat A = arg.A(coord.x_cb, parity, chirality);
           HalfVector chi = out.chiral_project(chirality);
           chi = A * chi + b * chi;
 
           if (arg.dynamic_clover) {
             Mat A2 = A.square();
-            A2 += b.imag() * b.imag();
-            Cholesky<HMatrix, real, Arg::nColor * Arg::nSpin / 2> cholesky(A2);
-            chi = cholesky.backward(cholesky.forward(chi));
-            tmp += static_cast<real>(0.25) * chi.chiral_reconstruct(chirality);
+            A2 += arg.b2;
+            Cholesky<HMatrix, clover::cholesky_t<typename Arg::Float>, Arg::nColor * Arg::nSpin / 2> cholesky(A2);
+            chi = static_cast<real>(0.25) * cholesky.solve(chi);
           } else {
             Mat A2inv = arg.A2inv(coord.x_cb, parity, chirality);
-            chi = A2inv * chi;
-            tmp += static_cast<real>(2.0) * chi.chiral_reconstruct(chirality);
+            chi = static_cast<real>(2.0) * (A2inv * chi);
           }
+          tmp += chi.chiral_reconstruct(chirality);
         }
 
         tmp.toNonRel(); // switch back to non-chiral basis
 
         if (xpay) {
-          Vector x = arg.x(coord.x_cb, my_spinor_parity);
+          Vector x = arg.x[src_idx](coord.x_cb, my_spinor_parity);
           out = x + arg.a * tmp;
         } else {
           out = arg.a * tmp;
         }
       }
 
-      if (mykernel_type != EXTERIOR_KERNEL_ALL || active) arg.out(coord.x_cb, my_spinor_parity) = out;
+      if (mykernel_type != EXTERIOR_KERNEL_ALL || active) arg.out[src_idx](coord.x_cb, my_spinor_parity) = out;
     }
   };
 

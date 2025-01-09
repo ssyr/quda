@@ -1,7 +1,6 @@
 #pragma once
 
-#include <limits.h>
-#define QUDA_INVALID_ENUM INT_MIN
+#define QUDA_INVALID_ENUM (-0x7fffffff - 1)
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,8 +10,11 @@ typedef enum qudaError_t { QUDA_SUCCESS = 0, QUDA_ERROR = 1, QUDA_ERROR_UNINITIA
 
 typedef enum QudaMemoryType_s {
   QUDA_MEMORY_DEVICE,
-  QUDA_MEMORY_PINNED,
+  QUDA_MEMORY_DEVICE_PINNED,
+  QUDA_MEMORY_HOST,
+  QUDA_MEMORY_HOST_PINNED,
   QUDA_MEMORY_MAPPED,
+  QUDA_MEMORY_MANAGED,
   QUDA_MEMORY_INVALID = QUDA_INVALID_ENUM
 } QudaMemoryType;
 
@@ -27,6 +29,7 @@ typedef enum QudaLinkType_s {
   QUDA_MOMENTUM_LINKS,
   QUDA_COARSE_LINKS,                  // used for coarse-gauge field with multigrid
   QUDA_SMEARED_LINKS,                 // used for loading and saving gaugeSmeared in the interface
+  QUDA_TWOLINK_LINKS,                 // used for staggered fermion smearing.
   QUDA_WILSON_LINKS = QUDA_SU3_LINKS, // used by wilson, clover, twisted mass, and domain wall
   QUDA_ASQTAD_FAT_LINKS = QUDA_GENERAL_LINKS,
   QUDA_ASQTAD_LONG_LINKS = QUDA_THREE_LINKS,
@@ -86,6 +89,8 @@ typedef enum QudaGaugeFixed_s {
 // Types used in QudaInvertParam
 //
 
+// Note: make sure QudaDslashType has corresponding entries in
+// tests/utils/misc.cpp
 typedef enum QudaDslashType_s {
   QUDA_WILSON_DSLASH,
   QUDA_CLOVER_WILSON_DSLASH,
@@ -108,11 +113,8 @@ typedef enum QudaInverterType_s {
   QUDA_BICGSTAB_INVERTER,
   QUDA_GCR_INVERTER,
   QUDA_MR_INVERTER,
-  QUDA_MPBICGSTAB_INVERTER,
   QUDA_SD_INVERTER,
-  QUDA_XSD_INVERTER,
   QUDA_PCG_INVERTER,
-  QUDA_MPCG_INVERTER,
   QUDA_EIGCG_INVERTER,
   QUDA_INC_EIGCG_INVERTER,
   QUDA_GMRESDR_INVERTER,
@@ -136,6 +138,7 @@ typedef enum QudaInverterType_s {
 typedef enum QudaEigType_s {
   QUDA_EIG_TR_LANCZOS,     // Thick restarted lanczos solver
   QUDA_EIG_BLK_TR_LANCZOS, // Block Thick restarted lanczos solver
+  QUDA_EIG_TR_LANCZOS_3D,  // Thick restarted lanczos solver for 3-d systems
   QUDA_EIG_IR_ARNOLDI,     // Implicitly Restarted Arnoldi solver
   QUDA_EIG_BLK_IR_ARNOLDI, // Block Implicitly Restarted Arnoldi solver
   QUDA_EIG_INVALID = QUDA_INVALID_ENUM
@@ -184,10 +187,15 @@ typedef enum QudaMultigridCycleType_s {
 } QudaMultigridCycleType;
 
 typedef enum QudaSchwarzType_s {
-  QUDA_ADDITIVE_SCHWARZ,
-  QUDA_MULTIPLICATIVE_SCHWARZ,
+  QUDA_ADDITIVE_SCHWARZ = 0,
+  QUDA_MULTIPLICATIVE_SCHWARZ = 1,
   QUDA_INVALID_SCHWARZ = QUDA_INVALID_ENUM
 } QudaSchwarzType;
+
+typedef enum QudaAcceleratorType_s {
+  QUDA_MADWF_ACCELERATOR = 0, // Use the MADWF accelerator
+  QUDA_INVALID_ACCELERATOR = QUDA_INVALID_ENUM
+} QudaAcceleratorType;
 
 typedef enum QudaResidualType_s {
   QUDA_L2_RELATIVE_RESIDUAL = 1, // L2 relative residual (default)
@@ -255,6 +263,7 @@ typedef enum QudaCloverFieldOrder_s {
   QUDA_FLOAT_CLOVER_ORDER = 1,  // even-odd float ordering
   QUDA_FLOAT2_CLOVER_ORDER = 2, // even-odd float2 ordering
   QUDA_FLOAT4_CLOVER_ORDER = 4, // even-odd float4 ordering
+  QUDA_FLOAT8_CLOVER_ORDER = 8, // even-odd float8 ordering
   QUDA_PACKED_CLOVER_ORDER,     // even-odd, QDP packed
   QUDA_QDPJIT_CLOVER_ORDER,     // (diagonal / off-diagonal)-chirality-spacetime
   QUDA_BQCD_CLOVER_ORDER,       // even-odd, super-diagonal packed and reordered
@@ -268,8 +277,6 @@ typedef enum QudaVerbosity_s {
   QUDA_DEBUG_VERBOSE,
   QUDA_INVALID_VERBOSITY = QUDA_INVALID_ENUM
 } QudaVerbosity;
-
-typedef enum QudaTune_s { QUDA_TUNE_NO, QUDA_TUNE_YES, QUDA_TUNE_INVALID = QUDA_INVALID_ENUM } QudaTune;
 
 typedef enum QudaPreserveDirac_s {
   QUDA_PRESERVE_DIRAC_NO,
@@ -357,20 +364,24 @@ typedef enum QudaFieldOrder_s {
 } QudaFieldOrder;
 
 typedef enum QudaFieldCreate_s {
-  QUDA_NULL_FIELD_CREATE,      // create new field
-  QUDA_ZERO_FIELD_CREATE,      // create new field and zero it
-  QUDA_COPY_FIELD_CREATE,      // create copy to field
-  QUDA_REFERENCE_FIELD_CREATE, // create reference to field
+  QUDA_NULL_FIELD_CREATE,      // new field
+  QUDA_ZERO_FIELD_CREATE,      // new field and zero it
+  QUDA_COPY_FIELD_CREATE,      // copy to field
+  QUDA_REFERENCE_FIELD_CREATE, // reference to field
+  QUDA_GHOST_FIELD_CREATE,     // dummy field used only for ghost storage
   QUDA_INVALID_FIELD_CREATE = QUDA_INVALID_ENUM
 } QudaFieldCreate;
 
-typedef enum QudaGammaBasis_s {
-  QUDA_DEGRAND_ROSSI_GAMMA_BASIS,
-  QUDA_UKQCD_GAMMA_BASIS,
-  QUDA_CHIRAL_GAMMA_BASIS,
-  QUDA_INVALID_GAMMA_BASIS = QUDA_INVALID_ENUM
+typedef enum QudaGammaBasis_s {          // gamj=((top 2 rows)(bottom 2 rows))  s1,s2,s3 are Pauli spin matrices, 1 is 2x2 identity
+  QUDA_DEGRAND_ROSSI_GAMMA_BASIS,   // gam1=((0,i*s1)(-i*s1,0)) gam2=((0,-i*s2)(i*s2,0)) gam3=((0,i*s3)(-i*s3,0)) gam4=((0,1)(1,0))  gam5=((-1,0)(0,1))
+  QUDA_UKQCD_GAMMA_BASIS,           // gam1=((0,i*s1)(-i*s1,0)) gam2=((0,i*s2)(-i*s2,0)) gam3=((0,i*s3)(-i*s3,0)) gam4=((1,0)(0,-1)) gam5=((0,-1)(-1,0))
+  QUDA_CHIRAL_GAMMA_BASIS,          // gam1=((0,-i*s1)(i*s1,0)) gam2=((0,-i*s2)(i*s2,0)) gam3=((0,-i*s3)(i*s3,0)) gam4=((0,-1)(-1,0))gam5=((1,0)(0,-1))
+  QUDA_DIRAC_PAULI_GAMMA_BASIS,     // gam1=((0,-i*s1)(i*s1,0)) gam2=((0,-i*s2)(i*s2,0)) gam3=((0,-i*s3)(i*s3,0)) gam4=((1,0)(0,-1)) gam5=((0,1)(1,0))
+  QUDA_INVALID_GAMMA_BASIS = QUDA_INVALID_ENUM      //  gam5=gam4*gam1*gam2*gam3
 } QudaGammaBasis;
-
+                                      //  Dirac-Pauli -> DeGrand-Rossi   T = i/sqrt(2)*((s2,-s2)(s2,s2))     field_DR = T * field_DP
+                                      //  UKQCD -> DeGrand-Rossi         T = i/sqrt(2)*((-s2,-s2)(-s2,s2))   field_DR = T * field_UK
+                                      //  Chiral -> DeGrand-Rossi        T = i*((0,-s2)(s2,0))               field_DR = T * field_chiral
 typedef enum QudaSourceType_s {
   QUDA_POINT_SOURCE,
   QUDA_RANDOM_SOURCE,
@@ -386,6 +397,15 @@ typedef enum QudaNoiseType_s {
   QUDA_NOISE_INVALID = QUDA_INVALID_ENUM
 } QudaNoiseType;
 
+typedef enum QudaDilutionType_s {
+  QUDA_DILUTION_SPIN,
+  QUDA_DILUTION_COLOR,
+  QUDA_DILUTION_SPIN_COLOR,
+  QUDA_DILUTION_SPIN_COLOR_EVEN_ODD,
+  QUDA_DILUTION_BLOCK,
+  QUDA_DILUTION_INVALID = QUDA_INVALID_ENUM
+} QudaDilutionType;
+
 // used to select projection method for deflated solvers
 typedef enum QudaProjectionType_s {
   QUDA_MINRES_PROJECTION,
@@ -399,7 +419,6 @@ typedef enum QudaPCType_s { QUDA_4D_PC = 4, QUDA_5D_PC = 5, QUDA_PC_INVALID = QU
 typedef enum QudaTwistFlavorType_s {
   QUDA_TWIST_SINGLET = 1,
   QUDA_TWIST_NONDEG_DOUBLET = +2,
-  QUDA_TWIST_DEG_DOUBLET = -2,
   QUDA_TWIST_NO = 0,
   QUDA_TWIST_INVALID = QUDA_INVALID_ENUM
 } QudaTwistFlavorType;
@@ -453,6 +472,7 @@ typedef enum QudaTransferType_s {
   QUDA_TRANSFER_AGGREGATE,
   QUDA_TRANSFER_COARSE_KD,
   QUDA_TRANSFER_OPTIMIZED_KD,
+  QUDA_TRANSFER_OPTIMIZED_KD_DROP_LONG,
   QUDA_TRANSFER_INVALID = QUDA_INVALID_ENUM
 } QudaTransferType;
 
@@ -465,6 +485,12 @@ typedef enum QudaBoolean_s {
 // define these for backwards compatibility
 #define QUDA_BOOLEAN_NO QUDA_BOOLEAN_FALSE
 #define QUDA_BOOLEAN_YES QUDA_BOOLEAN_TRUE
+
+typedef enum QudaBLASType_s {
+  QUDA_BLAS_GEMM = 0,
+  QUDA_BLAS_LU_INV = 1,
+  QUDA_BLAS_INVALID = QUDA_INVALID_ENUM
+} QudaBLASType;
 
 typedef enum QudaBLASOperation_s {
   QUDA_BLAS_OP_N = 0, // No transpose
@@ -501,6 +527,7 @@ typedef enum QudaFieldGeometry_s {
   QUDA_VECTOR_GEOMETRY = 4,
   QUDA_TENSOR_GEOMETRY = 6,
   QUDA_COARSE_GEOMETRY = 8,
+  QUDA_KDINVERSE_GEOMETRY = 16, // Decomposition of Kahler-Dirac block
   QUDA_INVALID_GEOMETRY = QUDA_INVALID_ENUM
 } QudaFieldGeometry;
 
@@ -514,16 +541,51 @@ typedef enum QudaGhostExchange_s {
 typedef enum QudaStaggeredPhase_s {
   QUDA_STAGGERED_PHASE_NO = 0,
   QUDA_STAGGERED_PHASE_MILC = 1,
-  QUDA_STAGGERED_PHASE_CPS = 2,
+  QUDA_STAGGERED_PHASE_CHROMA = 2,
   QUDA_STAGGERED_PHASE_TIFR = 3,
   QUDA_STAGGERED_PHASE_INVALID = QUDA_INVALID_ENUM
 } QudaStaggeredPhase;
 
+typedef enum QudaSpinTasteGamma_s {
+  QUDA_SPIN_TASTE_G1 = 0,
+  QUDA_SPIN_TASTE_GX = 1,
+  QUDA_SPIN_TASTE_GY = 2,
+  QUDA_SPIN_TASTE_GZ = 4,
+  QUDA_SPIN_TASTE_GT = 8,
+  QUDA_SPIN_TASTE_G5 = 15,
+  QUDA_SPIN_TASTE_GYGZ = 6,
+  QUDA_SPIN_TASTE_GZGX = 5,
+  QUDA_SPIN_TASTE_GXGY = 3,
+  QUDA_SPIN_TASTE_GXGT = 9,
+  QUDA_SPIN_TASTE_GYGT = 10,
+  QUDA_SPIN_TASTE_GZGT = 12,
+  QUDA_SPIN_TASTE_G5GX = 14,
+  QUDA_SPIN_TASTE_G5GY = 13,
+  QUDA_SPIN_TASTE_G5GZ = 11,
+  QUDA_SPIN_TASTE_G5GT = 7,
+  QUDA_SPIN_TASTE_INVALID = QUDA_INVALID_ENUM
+} QudaSpinTasteGamma;
+
 typedef enum QudaContractType_s {
-  QUDA_CONTRACT_TYPE_OPEN, // Open spin elementals
-  QUDA_CONTRACT_TYPE_DR,   // DegrandRossi
+  QUDA_CONTRACT_TYPE_STAGGERED_FT_T, // Staggered, FT in tdim
+  QUDA_CONTRACT_TYPE_DR_FT_T,        // DegrandRossi insertion, FT in tdim
+  QUDA_CONTRACT_TYPE_DR_FT_Z,        // DegrandRossi insertion, FT in zdim
+  QUDA_CONTRACT_TYPE_STAGGERED,      // Staggered, no summation (TODO: remove line)
+  QUDA_CONTRACT_TYPE_DR,             // DegrandRossi insertion, no summation
+  QUDA_CONTRACT_TYPE_OPEN,           // Open spin elementals, no summation
+  QUDA_CONTRACT_TYPE_OPEN_SUM_T,     // Open spin elementals, spatially summed over tdim
+  QUDA_CONTRACT_TYPE_OPEN_SUM_Z,     // Open spin elementals, spatially summed over zdim
+  QUDA_CONTRACT_TYPE_OPEN_FT_T,      // Open spin elementals, FT in tdim
+  QUDA_CONTRACT_TYPE_OPEN_FT_Z,      // Open spin elementals, FT in zdim
   QUDA_CONTRACT_TYPE_INVALID = QUDA_INVALID_ENUM
 } QudaContractType;
+
+typedef enum QudaFFTSymmType_t {
+  QUDA_FFT_SYMM_ODD = 1,  // sin(phase)
+  QUDA_FFT_SYMM_EVEN = 2, // cos(phase)
+  QUDA_FFT_SYMM_EO = 3,   // exp(-i phase)
+  QUDA_FFT_SYMM_INVALID = QUDA_INVALID_ENUM
+} QudaFFTSymmType;
 
 typedef enum QudaContractGamma_s {
   QUDA_CONTRACT_GAMMA_I = 0,
@@ -545,19 +607,40 @@ typedef enum QudaContractGamma_s {
   QUDA_CONTRACT_GAMMA_INVALID = QUDA_INVALID_ENUM
 } QudaContractGamma;
 
+typedef enum QudaGaugeSmearType_s {
+  QUDA_GAUGE_SMEAR_APE,
+  QUDA_GAUGE_SMEAR_STOUT,
+  QUDA_GAUGE_SMEAR_OVRIMP_STOUT,
+  QUDA_GAUGE_SMEAR_HYP,
+  QUDA_GAUGE_SMEAR_WILSON_FLOW,
+  QUDA_GAUGE_SMEAR_SYMANZIK_FLOW,
+  QUDA_GAUGE_SMEAR_INVALID = QUDA_INVALID_ENUM
+} QudaGaugeSmearType;
+
 typedef enum QudaWFlowType_s {
   QUDA_WFLOW_TYPE_WILSON,
   QUDA_WFLOW_TYPE_SYMANZIK,
   QUDA_WFLOW_TYPE_INVALID = QUDA_INVALID_ENUM
 } QudaWFlowType;
 
+typedef enum QudaFermionSmearType_s {
+  QUDA_FERMION_SMEAR_TYPE_GAUSSIAN,
+  QUDA_FERMION_SMEAR_TYPE_WUPPERTAL,
+  QUDA_FERMION_SMEAR_TYPE_INVALID = QUDA_INVALID_ENUM
+} QudaFermionSmearType;
+
 // Allows to choose an appropriate external library
 typedef enum QudaExtLibType_s {
   QUDA_CUSOLVE_EXTLIB,
   QUDA_EIGEN_EXTLIB,
-  QUDA_MAGMA_EXTLIB,
   QUDA_EXTLIB_INVALID = QUDA_INVALID_ENUM
 } QudaExtLibType;
+
+typedef enum QudaWFlowStepType_s {
+  WFLOW_STEP_W1,
+  WFLOW_STEP_W2,
+  WFLOW_STEP_VT,
+} QudaWFlowStepType;
 
 #ifdef __cplusplus
 }

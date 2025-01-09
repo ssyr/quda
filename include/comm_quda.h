@@ -1,15 +1,29 @@
 #pragma once
 #include <cstdint>
+#include <vector>
+#include <quda_constants.h>
+#include <quda_api.h>
+#include <array.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* defined in quda.h; redefining here to avoid circular references */
+typedef int (*QudaCommsMap)(const int *coords, void *fdata);
+
+#ifdef __cplusplus
+}
+#endif
+
+/** Maximum length in bytes of the host string */
+#define QUDA_MAX_HOSTNAME_STRING 128
+
+namespace quda
+{
+
   typedef struct MsgHandle_s MsgHandle;
   typedef struct Topology_s Topology;
-
-  /* defined in quda.h; redefining here to avoid circular references */
-  typedef int (*QudaCommsMap)(const int *coords, void *fdata);
 
   char *comm_hostname(void);
   double comm_drand(void);
@@ -25,22 +39,36 @@ extern "C" {
   Topology *comm_default_topology(void);
 
   // routines related to direct peer-2-peer access
-  void comm_set_neighbor_ranks(Topology *topo=NULL);
+  void comm_set_neighbor_ranks(Topology *topo = NULL);
   int comm_neighbor_rank(int dir, int dim);
 
   /**
      Return the number of processes in the dimension dim
      @param dim Dimension which we are querying
      @return Length of process dimensions
-   */
+  */
   int comm_dim(int dim);
 
   /**
-     Return the coording of this process in the dimension dim
+     Return the global number of processes in the dimension dim
+     @param dim Dimension which we are querying
+     @return Length of process dimensions
+  */
+  int comm_dim_global(int dim);
+
+  /**
+     Return the coordinate of this process in the dimension dim
      @param dim Dimension which we are querying
      @return Coordinate of this process
-   */
+  */
   int comm_coord(int dim);
+
+  /**
+     Return the global coordinates of this process in the dimension dim
+     @param dim Dimension which we are querying
+     @return Coordinate of this process
+  */
+  int comm_coord_global(int dim);
 
   /**
    * Declare a message handle for sending `nbytes` to the `rank` with `tag`.
@@ -61,10 +89,10 @@ extern "C" {
      @param dir Direction in which messaged with be sent (0 - backwards, 1 forwards)
      @param nbytes Size of message in bytes
   */
-  MsgHandle *comm_declare_send_relative_(const char *func, const char *file, int line,
-					 void *buffer, int dim, int dir, size_t nbytes);
+  MsgHandle *comm_declare_send_relative_(const char *func, const char *file, int line, void *buffer, int dim, int dir,
+                                         size_t nbytes);
 
-#define comm_declare_send_relative(buffer, dim, dir, nbytes)		\
+#define comm_declare_send_relative(buffer, dim, dir, nbytes)                                                           \
   comm_declare_send_relative_(__func__, __FILE__, __LINE__, buffer, dim, dir, nbytes)
 
   /**
@@ -76,10 +104,10 @@ extern "C" {
      @param dir Direction from messaged with be recived (0 - backwards, 1 forwards)
      @param nbytes Size of message in bytes
   */
-  MsgHandle *comm_declare_receive_relative_(const char *func, const char *file, int line,
-					    void *buffer, int dim, int dir, size_t nbytes);
+  MsgHandle *comm_declare_receive_relative_(const char *func, const char *file, int line, void *buffer, int dim,
+                                            int dir, size_t nbytes);
 
-#define comm_declare_receive_relative(buffer, dim, dir, nbytes)		\
+#define comm_declare_receive_relative(buffer, dim, dir, nbytes)                                                        \
   comm_declare_receive_relative_(__func__, __FILE__, __LINE__, buffer, dim, dir, nbytes)
 
   /**
@@ -93,11 +121,10 @@ extern "C" {
      @param nblocks Number of blocks
      @param stride Stride between blocks in bytes
   */
-  MsgHandle *comm_declare_strided_send_relative_(const char *func, const char *file, int line,
-						 void *buffer, int dim, int dir,
-						 size_t blksize, int nblocks, size_t stride);
+  MsgHandle *comm_declare_strided_send_relative_(const char *func, const char *file, int line, void *buffer, int dim,
+                                                 int dir, size_t blksize, int nblocks, size_t stride);
 
-#define comm_declare_strided_send_relative(buffer, dim, dir, blksize, nblocks, stride) \
+#define comm_declare_strided_send_relative(buffer, dim, dir, blksize, nblocks, stride)                                 \
   comm_declare_strided_send_relative_(__func__, __FILE__, __LINE__, buffer, dim, dir, blksize, nblocks, stride)
 
   /**
@@ -111,11 +138,10 @@ extern "C" {
      @param nblocks Number of blocks
      @param stride Stride between blocks in bytes
   */
-  MsgHandle *comm_declare_strided_receive_relative_(const char *func, const char *file, int line,
-						    void *buffer, int dim, int dir,
-						    size_t blksize, int nblocks, size_t stride);
+  MsgHandle *comm_declare_strided_receive_relative_(const char *func, const char *file, int line, void *buffer, int dim,
+                                                    int dir, size_t blksize, int nblocks, size_t stride);
 
-#define comm_declare_strided_receive_relative(buffer, dim, dir, blksize, nblocks, stride) \
+#define comm_declare_strided_receive_relative(buffer, dim, dir, blksize, nblocks, stride)                              \
   comm_declare_strided_receive_relative_(__func__, __FILE__, __LINE__, buffer, dim, dir, blksize, nblocks, stride)
 
   void comm_finalize(void);
@@ -125,7 +151,7 @@ extern "C" {
   /**
      @brief Loop over comm_dim_partitioned(dim) for all comms dimensions
      @return Whether any communications dimensions are partitioned
-   */
+  */
   int comm_partitioned();
 
   /**
@@ -144,7 +170,7 @@ extern "C" {
      @brief Return a string that defines the comm topology (for use as a tuneKey)
      @return String specifying comm topology
   */
-  const char* comm_dim_topology_string();
+  const char *comm_dim_topology_string();
 
   /**
      @brief Return a string that defines the P2P/GDR environment
@@ -179,7 +205,7 @@ extern "C" {
   /**
      @return Number of processes
   */
-  int comm_size(void);
+  size_t comm_size(void);
 
   /**
      @return GPU id associated with this process
@@ -188,29 +214,90 @@ extern "C" {
 
   /**
      @return Whether are doing determinisitic multi-process reductions or not
-   */
+  */
   bool comm_deterministic_reduce();
 
   /**
      @brief Gather all hostnames
      @param[out] hostname_recv_buf char array of length
-     128*comm_size() that will be filled in GPU ids for all processes.
-     Each hostname is in rank order, with 128 bytes for each.
-   */
+     QUDA_MAX_HOSTNAME_STRING*comm_size() that will be filled in GPU ids for all processes.
+     Each hostname is in rank order, with QUDA_MAX_HOSTNAME_STRING bytes for each.
+  */
   void comm_gather_hostname(char *hostname_recv_buf);
 
   /**
      @brief Gather all GPU ids
      @param[out] gpuid_recv_buf int array of length comm_size() that
      will be filled in GPU ids for all processes (in rank order).
-   */
+  */
   void comm_gather_gpuid(int *gpuid_recv_buf);
 
   /**
      Enabled peer-to-peer communication.
      @param hostname_buf Array that holds all process hostnames
-   */
+  */
   void comm_peer2peer_init(const char *hostname_recv_buf);
+
+  /**
+     @brief Query if peer-to-peer communication is possible between two GPUs
+     @param[in] local_gpuid GPU associated with this process
+     @param[in] neighbor_gpuid GPU associated with neighboring process
+     (assumed on same node)
+     @return True/false if peer-to-peer is possible
+  */
+  bool comm_peer2peer_possible(int local_gpuid, int neighbor_gpuid);
+
+  /**
+     @brief Query the performance of peer-to-peer communication between two GPUs
+     @param[in] local_gpuid GPU associated with this process
+     @param[in] neighbor_gpuid GPU associated with neighboring process
+     (assumed on same node)
+     @return Relative performance ranking between this pair of GPUs
+  */
+  int comm_peer2peer_performance(int local_gpuid, int neighbor_gpuid);
+
+  /**
+     @brief Symmetric exchange of local memory addresses between
+     logically neighboring processes on the lattice.  The remote
+     addresses that are returned are directly addressable by the local
+     process and can be read or written to by a kernel, or can be
+     copied to and from.  This exchange is only defined between
+     devices that are peer-to-peer enabled.
+     @param[out] remote Array of remote memory pointers to neighboring
+     pointers
+     @param[in] local The process-local memory pointer to be exchanged
+     from this process
+  */
+  void comm_create_neighbor_memory(array_2d<void *, QUDA_MAX_DIM, 2> &remote, void *local);
+
+  /**
+     @brief Deallocate the remote addresses to logically neighboring
+     processes on the on the lattice.
+     @param[in] remote Array of remote memory pointers to neighboring
+     pointers
+  */
+  void comm_destroy_neighbor_memory(array_2d<void *, QUDA_MAX_DIM, 2> &remote);
+
+  /**
+     @brief Create unique events shared between each logical pair of
+     neighboring processes, e.g., the event in the forwards direction
+     in a given dimension on a given process aliases the event in the
+     backward direction in the same dimension, and is unique
+     between that process pair. This exchange is only defined between
+     devices that are peer-to-peer enabled.
+     @param[out] remote Array of remote events to neighboring processes
+     @param[in] local Array of local event to neighboring processes
+   */
+  void comm_create_neighbor_event(array_2d<qudaEvent_t, QUDA_MAX_DIM, 2> &remote,
+                                  array_2d<qudaEvent_t, QUDA_MAX_DIM, 2> &local);
+
+  /**
+     @brief Destroy the coupled events
+     @param[out] remote Array of remote events to neighboring processes
+     @param[in] local Array of local event to neighboring processes
+   */
+  void comm_destroy_neighbor_event(array_2d<qudaEvent_t, QUDA_MAX_DIM, 2> &remote,
+                                   array_2d<qudaEvent_t, QUDA_MAX_DIM, 2> &local);
 
   /**
      @brief Returns true if any peer-to-peer capability is present on
@@ -264,6 +351,17 @@ extern "C" {
   bool comm_gdr_enabled();
 
   /**
+     @brief Return if zero-copy policy kernels have been enabled.  By
+     default kernels that read their communication halos directly from
+     host memory are disabled to reduce tuning time, since on
+     PCIe-based architectures, these kernels underperform and can take
+     excessive tuning time.  They can be enabled with the environment
+     variable QUDA_ENABLE_ZERO_COPY=1
+     @return Return if zero-copy policy halos are enabled
+   */
+  bool comm_zero_copy_enabled();
+
+  /**
      @brief Query if NVSHMEM communication is enabled (global setting)
   */
   bool comm_nvshmem_enabled();
@@ -299,8 +397,8 @@ extern "C" {
      @param nblocks Number of blocks
      @param stride Stride between blocks in bytes
   */
-  MsgHandle *comm_declare_strided_send_displaced(
-      void *buffer, const int displacement[], size_t blksize, int nblocks, size_t stride);
+  MsgHandle *comm_declare_strided_send_displaced(void *buffer, const int displacement[], size_t blksize, int nblocks,
+                                                 size_t stride);
 
   /**
      Create a persistent strided message handler for a displaced receive
@@ -310,28 +408,45 @@ extern "C" {
      @param nblocks Number of blocks
      @param stride Stride between blocks in bytes
   */
-  MsgHandle *comm_declare_strided_receive_displaced(void *buffer, const int displacement[],
-						    size_t blksize, int nblocks, size_t stride);
+  MsgHandle *comm_declare_strided_receive_displaced(void *buffer, const int displacement[], size_t blksize, int nblocks,
+                                                    size_t stride);
 
   void comm_free(MsgHandle *&mh);
   void comm_start(MsgHandle *mh);
   void comm_wait(MsgHandle *mh);
   int comm_query(MsgHandle *mh);
-  void comm_allreduce(double* data);
-  void comm_allreduce_max(double* data);
-  void comm_allreduce_min(double* data);
-  void comm_allreduce_array(double* data, size_t size);
-  void comm_allreduce_max_array(double* data, size_t size);
-  void comm_allreduce_int(int* data);
-  void comm_allreduce_xor(uint64_t *data);
-  void comm_broadcast(void *data, size_t nbytes);
+
+  template <typename T> void comm_allreduce_sum(T &v);
+  template <typename T> void comm_allreduce_max(T &v);
+  template <typename T> void comm_allreduce_min(T &v);
+
+  void comm_allreduce_int(int &data);
+  void comm_allreduce_xor(uint64_t &data);
+
+  /**
+     @brief Broadcast from the root rank
+     @param[in,out] data The data to be read from on the root rank, and
+     written to on all other ranks
+     @param[in] nbytes The size in bytes of data to be broadcast
+     @param[in] root The process that will be broadcasting
+  */
+  void comm_broadcast(void *data, size_t nbytes, int root = 0);
+
+  /**
+     @brief Multi-process barrier that applies to the present
+     communicator
+   */
   void comm_barrier(void);
+
+  /**
+     @brief Multi-process barrier that is global regardless of the
+     present communicator
+   */
+  void comm_barrier_global(void);
+
   void comm_abort(int status);
   void comm_abort_(int status);
 
-  void reduceMaxDouble(double &);
-  void reduceDouble(double &);
-  void reduceDoubleArray(double *, const int len);
   int commDim(int);
   int commCoords(int);
   int commDimPartitioned(int dir);
@@ -344,11 +459,10 @@ extern "C" {
    */
   void commDimPartitionedReset();
   bool commGlobalReduction();
-  void commGlobalReductionSet(bool global_reduce);
+  void commGlobalReductionPush(bool global_reduce);
+  void commGlobalReductionPop();
 
   bool commAsyncReduction();
   void commAsyncReductionSet(bool global_reduce);
 
-#ifdef __cplusplus
-}
-#endif
+} // namespace quda

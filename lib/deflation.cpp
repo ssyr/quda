@@ -1,13 +1,7 @@
-#include <deflation.h>
-#include <qio_field.h>
-#include <string.h>
-
 #include <memory>
 
-#ifdef MAGMA_LIB
-#include <blas_magma.h>
-#endif
-
+#include <deflation.h>
+#include <vector_io.h>
 #include <eigen_helper.h>
 
 namespace quda
@@ -30,7 +24,10 @@ namespace quda
     // for reporting level 1 is the fine level but internally use level 0 for indexing
     printfQuda("Creating deflation space of %d vectors.\n", param.tot_dim);
 
-    if (param.eig_global.import_vectors) loadVectors(param.RV); // whether to load eigenvectors
+    if (param.eig_global.import_vectors) { // whether to load eigenvectors
+      VectorIO io(param.eig_global.vec_infile);
+      io.load(*param.RV);
+    }
     // create aux fields
     ColorSpinorParam csParam(param.RV->Component(0));
     csParam.create = QUDA_ZERO_FIELD_CREATE;
@@ -88,15 +85,7 @@ namespace quda
 
     std::unique_ptr<Complex, decltype(pinned_deleter) > projm( pinned_allocator(param.ld*param.cur_dim * sizeof(Complex)), pinned_deleter);
 
-    if (param.eig_global.extlib_type == QUDA_MAGMA_EXTLIB) {
-#ifdef MAGMA_LIB
-      memcpy(projm.get(), param.matProj, param.ld*param.cur_dim*sizeof(Complex));
-      std::unique_ptr<double[] > evals(new double[param.ld]);
-      magma_Xheev(projm.get(), param.cur_dim, param.ld, evals.get(), sizeof(Complex));
-#else
-      errorQuda("MAGMA library was not built");
-#endif
-    } else if( param.eig_global.extlib_type == QUDA_EIGEN_EXTLIB ) {
+if( param.eig_global.extlib_type == QUDA_EIGEN_EXTLIB ) {
       Map<MatrixXcd, Unaligned, DynamicStride> projm_(param.matProj, param.cur_dim, param.cur_dim, DynamicStride(param.ld, 1));
       Map<MatrixXcd, Unaligned, DynamicStride> evecs_(projm.get(), param.cur_dim, param.cur_dim, DynamicStride(param.ld, 1));
 
@@ -112,7 +101,7 @@ namespace quda
 
     for (int i = 0; i < n_evs_to_print; i++) {
       zero(*r);
-      blas::caxpy(&projm.get()[i * param.ld], rv, res); // multiblas
+      blas::legacy::caxpy(&projm.get()[i * param.ld], rv, res); // multiblas
       *r_sloppy = *r;
       param.matDeflation(*Av_sloppy, *r_sloppy);
       double3 dotnorm = cDotProductNormA(*r_sloppy, *Av_sloppy);
@@ -144,16 +133,10 @@ namespace quda
     std::vector<ColorSpinorField*> in_;
     in_.push_back(static_cast<ColorSpinorField*>(b_sloppy));
 
-    blas::cDotProduct(vec.get(), rv_, in_);//<i, b>
+    blas::legacy::cDotProduct(vec.get(), rv_, in_); //<i, b>
 
     if (!param.use_inv_ritz) {
-      if (param.eig_global.extlib_type == QUDA_MAGMA_EXTLIB) {
-#ifdef MAGMA_LIB
-        magma_Xgesv(vec.get(), param.ld, param.cur_dim, param.matProj, param.ld, sizeof(Complex));
-#else
-        errorQuda("MAGMA library was not built");
-#endif
-      } else if (param.eig_global.extlib_type == QUDA_EIGEN_EXTLIB) {
+      if (param.eig_global.extlib_type == QUDA_EIGEN_EXTLIB) {
         Map<MatrixXcd, Unaligned, DynamicStride> projm_(param.matProj, param.cur_dim, param.cur_dim,
                                                         DynamicStride(param.ld, 1));
         Map<VectorXcd, Unaligned> vec_(vec.get(), param.cur_dim);
@@ -171,7 +154,7 @@ namespace quda
     std::vector<ColorSpinorField*> out_;
     out_.push_back(&x);
 
-    blas::caxpy(vec.get(), rv_, out_); //multiblas
+    blas::legacy::caxpy(vec.get(), rv_, out_); // multiblas
 
     check_nrm2 = norm2(x);
     printfQuda("\nDeflated guess spinor norm (gpu): %1.15e\n", sqrt(check_nrm2));
@@ -215,9 +198,9 @@ namespace quda
         std::vector<ColorSpinorField *> vi_;
         vi_.push_back(accum);
 
-        blas::cDotProduct(alpha.get(), vj_, vi_);
+        blas::legacy::cDotProduct(alpha.get(), vj_, vi_);
         for (int j = 0; j < local_length; j++) alpha[j] = -alpha[j];
-        blas::caxpy(alpha.get(), vj_, vi_); // i-<j,i>j
+        blas::legacy::caxpy(alpha.get(), vj_, vi_); // i-<j,i>j
 
         offset += cdot_pipeline_length;
       }
@@ -241,7 +224,7 @@ namespace quda
         std::vector<ColorSpinorField *> av_;
         av_.push_back(Av_sloppy);
 
-        blas::cDotProduct(alpha.get(), vj_, av_);
+        blas::legacy::cDotProduct(alpha.get(), vj_, av_);
 
         for (int j = 0; j < i; j++) {
           param.matProj[i * param.ld + j] = alpha[j];
@@ -268,13 +251,7 @@ namespace quda
 
     memcpy(projm.get(), param.matProj, param.ld * param.cur_dim * sizeof(Complex));
 
-    if (param.eig_global.extlib_type == QUDA_MAGMA_EXTLIB) {
-#ifdef MAGMA_LIB
-      magma_Xheev(projm.get(), param.cur_dim, param.ld, evals.get(), sizeof(Complex));
-#else
-      errorQuda("MAGMA library was not built");
-#endif
-    } else if (param.eig_global.extlib_type == QUDA_EIGEN_EXTLIB) {
+    if (param.eig_global.extlib_type == QUDA_EIGEN_EXTLIB) {
       Map<MatrixXcd, Unaligned, DynamicStride> projm_(projm.get(), param.cur_dim, param.cur_dim,
                                                       DynamicStride(param.ld, 1));
       Map<VectorXd, Unaligned> evals_(evals.get(), param.cur_dim);
@@ -315,7 +292,7 @@ namespace quda
       res.push_back(r);
 
       blas::zero(*r);
-      blas::caxpy(&projm.get()[idx * param.ld], rv, res); // multiblas
+      blas::legacy::caxpy(&projm.get()[idx * param.ld], rv, res); // multiblas
       blas::copy(buff->Component(idx), *r);
 
       if (do_residual_check) { // if tol=0.0 then disable relative residual norm check
@@ -338,76 +315,6 @@ namespace quda
     // reset current dimension:
     param.cur_dim = idx; // idx never exceeds cur_dim.
     param.tot_dim = idx;
-  }
-
-  //supports seperate reading or single file read
-  void Deflation::loadVectors(ColorSpinorField *RV)
-  {
-    if (RV->IsComposite()) errorQuda("Not a composite field");
-
-    profile.TPSTOP(QUDA_PROFILE_INIT);
-    profile.TPSTART(QUDA_PROFILE_IO);
-
-    std::string vec_infile(param.eig_global.vec_infile);
-    std::vector<ColorSpinorField *> &B = RV->Components();
-
-    const int Nvec = B.size();
-    printfQuda("Start loading %d vectors from %s\n", Nvec, vec_infile.c_str());
-
-    void **V = new void*[Nvec];
-    for (int i = 0; i < Nvec; i++) {
-      V[i] = B[i]->V();
-      if (V[i] == NULL) {
-	printfQuda("Could not allocate V[%d]\n", i);
-      }
-    }
-
-    if (strcmp(vec_infile.c_str(),"")!=0) {
-      auto parity = (B[0]->SiteSubset() == QUDA_FULL_SITE_SUBSET ? QUDA_INVALID_PARITY : QUDA_EVEN_PARITY);
-      read_spinor_field(vec_infile.c_str(), &V[0], B[0]->Precision(), B[0]->X(), B[0]->SiteSubset(), parity,
-                        B[0]->Ncolor(), B[0]->Nspin(), Nvec, 0, (char **)0);
-    } else {
-      errorQuda("No eigenspace file defined");
-    }
-
-    printfQuda("Done loading vectors\n");
-    profile.TPSTOP(QUDA_PROFILE_IO);
-    profile.TPSTART(QUDA_PROFILE_INIT);
-  }
-
-  void Deflation::saveVectors(ColorSpinorField *RV)
-  {
-    if (RV->IsComposite()) errorQuda("Not a composite field");
-
-    profile.TPSTOP(QUDA_PROFILE_INIT);
-    profile.TPSTART(QUDA_PROFILE_IO);
-
-    std::string vec_outfile(param.eig_global.vec_outfile);
-    std::vector<ColorSpinorField*> &B = RV->Components();
-
-    if (strcmp(param.eig_global.vec_outfile,"")!=0) {
-      const int Nvec = B.size();
-      printfQuda("Start saving %d vectors to %s\n", Nvec, vec_outfile.c_str());
-
-      void **V = static_cast<void**>(safe_malloc(Nvec*sizeof(void*)));
-      for (int i=0; i<Nvec; i++) {
-	V[i] = B[i]->V();
-	if (V[i] == NULL) {
-	  printfQuda("Could not allocate V[%d]\n", i);
-	}
-      }
-
-      // assumes even parity if a single-parity field...
-      auto parity = (B[0]->SiteSubset() == QUDA_FULL_SITE_SUBSET ? QUDA_INVALID_PARITY : QUDA_EVEN_PARITY);
-      write_spinor_field(vec_outfile.c_str(), &V[0], B[0]->Precision(), B[0]->X(), B[0]->SiteSubset(), parity,
-                         B[0]->Ncolor(), B[0]->Nspin(), Nvec, 0, (char **)0);
-
-      host_free(V);
-      printfQuda("Done saving vectors\n");
-    }
-
-    profile.TPSTOP(QUDA_PROFILE_IO);
-    profile.TPSTART(QUDA_PROFILE_INIT);
   }
 
 } // namespace quda

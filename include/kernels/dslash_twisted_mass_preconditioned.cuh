@@ -15,9 +15,10 @@ namespace quda
     real a_inv;      /** inverse scaling factor - used to allow early xpay inclusion */
     real b_inv;      /** inverse twist factor - used to allow early xpay inclusion */
 
-    TwistedMassArg(ColorSpinorField &out, const ColorSpinorField &in, const GaugeField &U, double a, double b, bool xpay,
-                   const ColorSpinorField &x, int parity, bool dagger, const int *comm_override) :
-      WilsonArg<Float, nColor, nDim, reconstruct_>(out, in, U, xpay ? 1.0 : 0.0, x, parity, dagger, comm_override),
+    TwistedMassArg(cvector_ref<ColorSpinorField> &out, cvector_ref<const ColorSpinorField> &in,
+                   const ColorSpinorField &halo, const GaugeField &U, double a, double b, bool xpay,
+                   cvector_ref<const ColorSpinorField> &x, int parity, bool dagger, const int *comm_override) :
+      WilsonArg<Float, nColor, nDim, reconstruct_>(out, in, halo, U, xpay ? 1.0 : 0.0, x, parity, dagger, comm_override),
       a(a),
       b(dagger ? -b : b), // if dagger flip the twist
       c(0.0),
@@ -46,8 +47,8 @@ namespace quda
      @param[in] thread_dim Which dimension this thread corresponds to (fused exterior only)
   */
   template <int nParity, bool dagger, int twist, KernelType kernel_type, typename Coord, typename Arg, typename Vector>
-  __device__ __host__ __forceinline__ void applyWilsonTM(Vector &out, Arg &arg, Coord &coord, int parity, int idx,
-                                                         int thread_dim, bool &active)
+  __device__ __host__ __forceinline__ void applyWilsonTM(Vector &out, const Arg &arg, Coord &coord, int parity, int idx,
+                                                         int thread_dim, bool &active, int src_idx)
   {
     static_assert(twist == 1 || twist == 2, "twist template must equal 1 or 2"); // ensure singlet or doublet
     typedef typename mapper<typename Arg::Float>::type real;
@@ -70,8 +71,8 @@ namespace quda
             idx;
 
           Link U = arg.U(d, coord.x_cb, parity);
-          HalfVector in = arg.in.Ghost(d, 1, ghost_idx + coord.s * arg.dc.ghostFaceCB[d], their_spinor_parity);
-          if (d == 3) in *= arg.t_proj_scale; // put this in the Ghost accessor and merge with any rescaling?
+          HalfVector in = arg.halo.Ghost(d, 1, ghost_idx + (src_idx * arg.Ls + coord.s) * arg.dc.ghostFaceCB[d],
+                                         their_spinor_parity);
 
           out += (U * in).reconstruct(d, proj_dir);
         } else if (doBulk<kernel_type>() && !ghost) {
@@ -79,11 +80,11 @@ namespace quda
           Link U = arg.U(d, coord.x_cb, parity);
           Vector in;
           if (twist == 1) {
-            in = arg.in(fwd_idx + coord.s * arg.dc.volume_4d_cb, their_spinor_parity);
+            in = arg.in[src_idx](fwd_idx + coord.s * arg.dc.volume_4d_cb, their_spinor_parity);
             in = arg.a * (in + arg.b * in.igamma(4)); // apply A^{-1} to in
           } else {                                    // twisted doublet
-            Vector in0 = arg.in(fwd_idx + 0 * arg.dc.volume_4d_cb, their_spinor_parity);
-            Vector in1 = arg.in(fwd_idx + 1 * arg.dc.volume_4d_cb, their_spinor_parity);
+            Vector in0 = arg.in[src_idx](fwd_idx + 0 * arg.dc.volume_4d_cb, their_spinor_parity);
+            Vector in1 = arg.in[src_idx](fwd_idx + 1 * arg.dc.volume_4d_cb, their_spinor_parity);
             if (coord.s == 0)
               in = arg.a * (in0 + arg.b * in0.igamma(4) + arg.c * in1);
             else
@@ -107,8 +108,8 @@ namespace quda
             idx;
 
           Link U = arg.U.Ghost(d, ghost_idx, 1 - parity);
-          HalfVector in = arg.in.Ghost(d, 0, ghost_idx + coord.s * arg.dc.ghostFaceCB[d], their_spinor_parity);
-          if (d == 3) in *= arg.t_proj_scale;
+          HalfVector in = arg.halo.Ghost(d, 0, ghost_idx + (src_idx * arg.Ls + coord.s) * arg.dc.ghostFaceCB[d],
+                                         their_spinor_parity);
 
           out += (conj(U) * in).reconstruct(d, proj_dir);
         } else if (doBulk<kernel_type>() && !ghost) {
@@ -116,11 +117,11 @@ namespace quda
           Link U = arg.U(d, gauge_idx, 1 - parity);
           Vector in;
           if (twist == 1) {
-            in = arg.in(back_idx + coord.s * arg.dc.volume_4d_cb, their_spinor_parity);
+            in = arg.in[src_idx](back_idx + coord.s * arg.dc.volume_4d_cb, their_spinor_parity);
             in = arg.a * (in + arg.b * in.igamma(4)); // apply A^{-1} to in
           } else {                                    // twisted doublet
-            Vector in0 = arg.in(back_idx + 0 * arg.dc.volume_4d_cb, their_spinor_parity);
-            Vector in1 = arg.in(back_idx + 1 * arg.dc.volume_4d_cb, their_spinor_parity);
+            Vector in0 = arg.in[src_idx](back_idx + 0 * arg.dc.volume_4d_cb, their_spinor_parity);
+            Vector in1 = arg.in[src_idx](back_idx + 1 * arg.dc.volume_4d_cb, their_spinor_parity);
             if (coord.s == 0)
               in = arg.a * (in0 + arg.b * in0.igamma(4) + arg.c * in1);
             else
@@ -136,8 +137,8 @@ namespace quda
   template <int nParity, bool dagger, bool xpay, KernelType kernel_type, typename Arg>
   struct twistedMassPreconditioned : dslash_default {
 
-    Arg &arg;
-    constexpr twistedMassPreconditioned(Arg &arg) : arg(arg) {}
+    const Arg &arg;
+    constexpr twistedMassPreconditioned(const Arg &arg) : arg(arg) {}
     static constexpr const char *filename() { return KERNEL_FILE; } // this file name - used for run-time compilation
     constexpr int twist_pack() const { return (!Arg::asymmetric && dagger) ? 1 : 0; }
 
@@ -147,11 +148,10 @@ namespace quda
        - with xpay:  out(x) = M*in = x + a*(1+i*b*gamma_5)D * in
     */
     template <KernelType mykernel_type = kernel_type>
-    __device__ __host__ __forceinline__ void operator()(int idx, int s, int parity)
+    __device__ __host__ __forceinline__ void operator()(int idx, int src_idx, int parity)
     {
       typedef typename mapper<typename Arg::Float>::type real;
       typedef ColorSpinor<real, Arg::nColor, 4> Vector;
-      typedef ColorSpinor<real, Arg::nColor, 2> HalfVector;
 
       bool active
         = mykernel_type == EXTERIOR_KERNEL_ALL ? false : true; // is thread active (non-trival for fused kernel only)
@@ -163,12 +163,12 @@ namespace quda
       Vector out;
 
       if (!dagger || Arg::asymmetric) // defined in dslash_wilson.cuh
-        applyWilson<nParity, dagger, mykernel_type>(out, arg, coord, parity, idx, thread_dim, active);
+        applyWilson<nParity, dagger, mykernel_type>(out, arg, coord, parity, idx, thread_dim, active, src_idx);
       else // special dslash for symmetric dagger
-        applyWilsonTM<nParity, dagger, 1, mykernel_type>(out, arg, coord, parity, idx, thread_dim, active);
+        applyWilsonTM<nParity, dagger, 1, mykernel_type>(out, arg, coord, parity, idx, thread_dim, active, src_idx);
 
       if (xpay && mykernel_type == INTERIOR_KERNEL) {
-        Vector x = arg.x(coord.x_cb, my_spinor_parity);
+        Vector x = arg.x[src_idx](coord.x_cb, my_spinor_parity);
         if (!dagger || Arg::asymmetric) {
           out += arg.a_inv * (x + arg.b_inv * x.igamma(4)); // apply inverse twist which is undone below
         } else {
@@ -176,7 +176,7 @@ namespace quda
         }
       } else if (mykernel_type != INTERIOR_KERNEL && active) {
         // if we're not the interior kernel, then we must sum the partial
-        Vector x = arg.out(coord.x_cb, my_spinor_parity);
+        Vector x = arg.out[src_idx](coord.x_cb, my_spinor_parity);
         out += x;
       }
 
@@ -184,7 +184,7 @@ namespace quda
         if (!dagger || Arg::asymmetric) out = arg.a * (out + arg.b * out.igamma(4)); // apply A^{-1} to D*in
       }
 
-      if (mykernel_type != EXTERIOR_KERNEL_ALL || active) arg.out(coord.x_cb, my_spinor_parity) = out;
+      if (mykernel_type != EXTERIOR_KERNEL_ALL || active) arg.out[src_idx](coord.x_cb, my_spinor_parity) = out;
     }
 
   };

@@ -1,4 +1,4 @@
-#include <complex_quda.h>
+#pragma once
 
 /**
    @file float_vector.h
@@ -7,36 +7,17 @@
    Inline device functions for elementary operations on short vectors, e.g., float4, etc.
 */
 
-#pragma once
+#include <complex_quda.h>
+#include <register_traits.h>
+#include <array.h>
+#include <limits>
+#include <type_traits>
 
 namespace quda {
 
   __host__ __device__ inline double2 operator+(const double2 &x, const double2 &y)
   {
     return make_double2(x.x + y.x, x.y + y.y);
-  }
-
-  __host__ __device__ inline double2 operator-(const double2 &x, const double2 &y)
-  {
-    return make_double2(x.x - y.x, x.y - y.y);
-  }
-
-  __host__ __device__ inline float2 operator-(const float2 &x, const float2 &y)
-  {
-    return make_float2(x.x - y.x, x.y - y.y);
-  }
-
-  __host__ __device__ inline float4 operator-(const float4 &x, const float4 &y)
-  {
-    return make_float4(x.x - y.x, x.y - y.y, x.z - y.z, x.w - y.w);
-  }
-
-  __host__ __device__ inline float8 operator-(const float8 &x, const float8 &y)
-  {
-    float8 z;
-    z.x = x.x - y.x;
-    z.y = x.y - y.y;
-    return z;
   }
 
   __host__ __device__ inline double3 operator+(const double3 &x, const double3 &y)
@@ -49,203 +30,121 @@ namespace quda {
     return make_double4(x.x + y.x, x.y + y.y, x.z + y.z, x.w + y.w);
   }
 
-  __host__ __device__ inline float4 operator*(const float &a, const float4 &x)
-  {
-    float4 y;
-    y.x = a*x.x;
-    y.y = a*x.y;
-    y.z = a*x.z;
-    y.w = a*x.w;
-    return y;
-  }
-
-  __host__ __device__ inline float2 operator*(const float &a, const float2 &x)
-  {
-    float2 y;
-    y.x = a*x.x;
-    y.y = a*x.y;
-    return y;
-  }
-
-  __host__ __device__ inline double2 operator*(const double &a, const double2 &x)
-  {
-    double2 y;
-    y.x = a*x.x;
-    y.y = a*x.y;
-    return y;
-  }
-
-  __host__ __device__ inline double4 operator*(const double &a, const double4 &x)
-  {
-    double4 y;
-    y.x = a*x.x;
-    y.y = a*x.y;
-    y.z = a*x.z;
-    y.w = a*x.w;
-    return y;
-  }
-
-  __host__ __device__ inline float8 operator*(const float &a, const float8 &x)
-  {
-    float8 y;
-    y.x = a * x.x;
-    y.y = a * x.y;
-    return y;
-  }
-
   __host__ __device__ inline float2 operator+(const float2 &x, const float2 &y)
   {
-    float2 z;
-    z.x = x.x + y.x;
-    z.y = x.y + y.y;
-    return z;
+    return make_float2(x.x + y.x, x.y + y.y);
   }
 
-  __host__ __device__ inline float4 operator+(const float4 &x, const float4 &y)
+  template <typename T, int n>
+  __device__ __host__ inline array<T, n> operator+(const array<T, n> &a, const array<T, n> &b)
   {
-    float4 z;
-    z.x = x.x + y.x;
-    z.y = x.y + y.y;
-    z.z = x.z + y.z;
-    z.w = x.w + y.w;
-    return z;
+    array<T, n> c;
+#pragma unroll
+    for (int i = 0; i < n; i++) c[i] = a[i] + b[i];
+    return c;
   }
 
-  __host__ __device__ inline float8 operator+(const float8 &x, const float8 &y)
+  template <typename T> constexpr std::enable_if_t<std::is_arithmetic_v<T>, T> zero() { return static_cast<T>(0); }
+  template <typename T> constexpr std::enable_if_t<std::is_same_v<T, complex<typename T::value_type>>, T> zero()
   {
-    float8 z;
-    z.x = x.x + y.x;
-    z.y = x.y + y.y;
-    return z;
+    return static_cast<T>(0);
   }
 
-  __host__ __device__ inline float4 operator+=(float4 &x, const float4 &y)
+  template <typename T, typename U> using specialize = std::enable_if_t<std::is_same_v<T, U>, U>;
+
+  template <typename T> constexpr specialize<T, double2> zero() { return double2 {0.0, 0.0}; }
+  template <typename T> constexpr specialize<T, double3> zero() { return double3 {0.0, 0.0, 0.0}; }
+  template <typename T> constexpr specialize<T, double4> zero() { return double4 {0.0, 0.0, 0.0, 0.0}; }
+
+  template <typename T> constexpr specialize<T, float2> zero() { return float2 {0.0f, 0.0f}; }
+  template <typename T> constexpr specialize<T, float3> zero() { return float3 {0.0f, 0.0f, 0.0f}; }
+  template <typename T> constexpr specialize<T, float4> zero() { return float4 {0.0f, 0.0f, 0.0f, 0.0f}; }
+
+#ifdef QUAD_SUM
+  template <typename T> __device__ __host__ inline specialize<T, doubledouble> zero() { return doubledouble(); }
+  template <typename T> __device__ __host__ inline specialize<T, doubledouble2> zero() { return doubledouble2(); }
+  template <typename T> __device__ __host__ inline specialize<T, doubledouble3> zero() { return doubledouble3(); }
+#endif
+
+  template <typename T, int n> __device__ __host__ inline array<T, n> zero()
   {
-    x.x += y.x;
-    x.y += y.y;
-    x.z += y.z;
-    x.w += y.w;
-    return x;
+    array<T, n> v;
+#pragma unroll
+    for (int i = 0; i < n; i++) v[i] = zero<T>();
+    return v;
   }
 
-  __host__ __device__ inline float2 operator+=(float2 &x, const float2 &y)
+  // array of arithmetic types specialization
+  template <typename T>
+  __device__ __host__ inline std::enable_if_t<
+    std::is_same_v<T, array<typename T::value_type, T::N>> && std::is_arithmetic_v<typename T::value_type>, T>
+  zero()
   {
-    x.x += y.x;
-    x.y += y.y;
-    return x;
+    return zero<typename T::value_type, T::N>();
   }
 
-  __host__ __device__ inline float8 operator+=(float8 &x, const float8 &y)
+  // array of array specialization
+  template <typename T>
+  __device__ __host__ inline std::enable_if_t<
+    std::is_same_v<T, array<array<typename T::value_type::value_type, T::value_type::N>, T::N>>, T>
+  zero()
   {
-    x.x += y.x;
-    x.y += y.y;
-    return x;
+    T v;
+#pragma unroll
+    for (int i = 0; i < v.size(); i++) v[i] = zero<typename T::value_type>();
+    return v;
   }
 
-  __host__ __device__ inline double2 operator+=(double2 &x, const double2 &y)
+  // array of complex specialization
+  template <typename T>
+  __device__
+    __host__ inline std::enable_if_t<std::is_same_v<T, array<complex<typename T::value_type::value_type>, T::N>>, T>
+    zero()
   {
-    x.x += y.x;
-    x.y += y.y;
-    return x;
+    T v;
+#pragma unroll
+    for (int i = 0; i < v.size(); i++) v[i] = zero<typename T::value_type>();
+    return v;
   }
 
-  __host__ __device__ inline double3 operator+=(double3 &x, const double3 &y)
+  /**
+     Container used when we want to track the reference value when
+     computing an infinity norm
+   */
+  template <typename T> struct deviation_t {
+    T diff;
+    T ref;
+  };
+
+  template <typename T> constexpr specialize<T, deviation_t<double>> zero() { return {0.0, 0.0}; }
+  template <typename T> constexpr specialize<T, deviation_t<float>> zero() { return {0.0f, 0.0f}; }
+
+  template <typename T> __host__ __device__ inline bool operator>(const deviation_t<T> &a, const deviation_t<T> &b)
   {
-    x.x += y.x;
-    x.y += y.y;
-    x.z += y.z;
-    return x;
+    return a.diff > b.diff;
   }
 
-  __host__ __device__ inline double4 operator+=(double4 &x, const double4 &y)
-  {
-    x.x += y.x;
-    x.y += y.y;
-    x.z += y.z;
-    x.w += y.w;
-    return x;
-  }
+  template <typename T> struct low {
+    static constexpr std::enable_if_t<std::is_arithmetic_v<T>, T> value() { return std::numeric_limits<T>::lowest(); }
+  };
 
-  __host__ __device__ inline float4 operator-=(float4 &x, const float4 &y)
-  {
-    x.x -= y.x;
-    x.y -= y.y;
-    x.z -= y.z;
-    x.w -= y.w;
-    return x;
-  }
+  template <typename T, int N> struct low<array<T, N>> {
+    static inline __host__ __device__ array<T, N> value()
+    {
+      array<T, N> v;
+#pragma unroll
+      for (int i = 0; i < N; i++) v[i] = low<T>::value();
+      return v;
+    }
+  };
 
-  __host__ __device__ inline float2 operator-=(float2 &x, const float2 &y)
-  {
-    x.x -= y.x;
-    x.y -= y.y;
-    return x;
-  }
+  template <typename T> struct low<deviation_t<T>> {
+    static inline __host__ __device__ deviation_t<T> value() { return {low<T>::value(), low<T>::value()}; }
+  };
 
-  __host__ __device__ inline float8 operator-=(float8 &x, const float8 &y)
-  {
-    x.x -= y.x;
-    x.y -= y.y;
-    return x;
-  }
-
-  __host__ __device__ inline double2 operator-=(double2 &x, const double2 &y)
-  {
-    x.x -= y.x;
-    x.y -= y.y;
-    return x;
-  }
-
-  __host__ __device__ inline float2 operator*=(float2 &x, const float &a)
-  {
-    x.x *= a;
-    x.y *= a;
-    return x;
-  }
-
-  __host__ __device__ inline double2 operator*=(double2 &x, const float &a)
-  {
-    x.x *= a;
-    x.y *= a;
-    return x;
-  }
-
-  __host__ __device__ inline float4 operator*=(float4 &a, const float &b) {
-    a.x *= b;
-    a.y *= b;
-    a.z *= b;
-    a.w *= b;
-    return a;
-  }
-
-  __host__ __device__ inline float8 operator*=(float8 &a, const float &b)
-  {
-    a.x *= b;
-    a.y *= b;
-    return a;
-  }
-
-  __host__ __device__ inline double2 operator*=(double2 &a, const double &b) {
-    a.x *= b;
-    a.y *= b;
-    return a;
-  }
-
-  __host__ __device__ inline double4 operator*=(double4 &a, const double &b) {
-    a.x *= b;
-    a.y *= b;
-    a.z *= b;
-    a.w *= b;
-    return a;
-  }
-
-  __host__ __device__ inline float2 operator-(const float2 &x) {
-    return make_float2(-x.x, -x.y);
-  }
-
-  __host__ __device__ inline double2 operator-(const double2 &x) {
-    return make_double2(-x.x, -x.y);
-  }
+  template <typename T> struct high {
+    static constexpr std::enable_if_t<std::is_arithmetic_v<T>, T> value() { return std::numeric_limits<T>::max(); }
+  };
 
   template <typename T> struct RealType {
   };
@@ -315,109 +214,4 @@ namespace quda {
   }
 #endif
 
-  __device__ __host__ inline void zero(double &a) { a = 0.0; }
-  __device__ __host__ inline void zero(double2 &a)
-  {
-    a.x = 0.0;
-    a.y = 0.0;
-  }
-  __device__ __host__ inline void zero(double3 &a)
-  {
-    a.x = 0.0;
-    a.y = 0.0;
-    a.z = 0.0;
-  }
-  __device__ __host__ inline void zero(double4 &a)
-  {
-    a.x = 0.0;
-    a.y = 0.0;
-    a.z = 0.0;
-    a.w = 0.0;
-  }
-
-  __device__ __host__ inline void zero(float &a) { a = 0.0; }
-  __device__ __host__ inline void zero(float2 &a)
-  {
-    a.x = 0.0;
-    a.y = 0.0;
-  }
-  __device__ __host__ inline void zero(float3 &a)
-  {
-    a.x = 0.0;
-    a.y = 0.0;
-    a.z = 0.0;
-  }
-  __device__ __host__ inline void zero(float4 &a)
-  {
-    a.x = 0.0;
-    a.y = 0.0;
-    a.z = 0.0;
-    a.w = 0.0;
-  }
-
-  __device__ __host__ inline void zero(short &a) { a = 0; }
-  __device__ __host__ inline void zero(char &a) { a = 0; }
-
-#ifdef QUAD_SUM
-  __device__ __host__ inline void zero(doubledouble &x)
-  {
-    x.a.x = 0.0;
-    x.a.y = 0.0;
-  }
-  __device__ __host__ inline void zero(doubledouble2 &x)
-  {
-    zero(x.x);
-    zero(x.y);
-  }
-  __device__ __host__ inline void zero(doubledouble3 &x)
-  {
-    zero(x.x);
-    zero(x.y);
-    zero(x.z);
-  }
-#endif
-
-  /**
-     struct which acts as a wrapper to a vector of data.
-   */
-  template <typename scalar, int n> struct vector_type {
-    scalar data[n];
-    __device__ __host__ inline scalar &operator[](int i) { return data[i]; }
-    __device__ __host__ inline const scalar &operator[](int i) const { return data[i]; }
-    __device__ __host__ inline static constexpr int size() { return n; }
-    __device__ __host__ inline void operator+=(const vector_type &a)
-    {
-#pragma unroll
-      for (int i = 0; i < n; i++) data[i] += a[i];
-    }
-    __device__ __host__ vector_type()
-    {
-#pragma unroll
-      for (int i = 0; i < n; i++) zero(data[i]);
-    }
-  };
-
-  template <typename T, int n> std::ostream &operator<<(std::ostream &output, const vector_type<T, n> &a)
-  {
-    output << "{ ";
-    for (int i = 0; i < n - 1; i++) output << a[i] << ", ";
-    output << a[n - 1] << " }";
-    return output;
-  }
-
-  template <typename scalar, int n> __device__ __host__ inline void zero(vector_type<scalar, n> &v)
-  {
-#pragma unroll
-    for (int i = 0; i < n; i++) zero(v.data[i]);
-  }
-
-  template <typename scalar, int n>
-  __device__ __host__ inline vector_type<scalar, n> operator+(const vector_type<scalar, n> &a,
-                                                              const vector_type<scalar, n> &b)
-  {
-    vector_type<scalar, n> c;
-#pragma unroll
-    for (int i = 0; i < n; i++) c[i] = a[i] + b[i];
-    return c;
-  }
 }

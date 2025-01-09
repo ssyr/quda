@@ -1,64 +1,46 @@
-#include <stdlib.h>
-#include <stdio.h>
-#include <cstring> // needed for memset
-
-#include <tune_quda.h>
-#include <quda_internal.h>
 #include <blas_quda.h>
 #include <color_spinor_field.h>
-
-#include <jitify_helper.cuh>
+#include <tunable_nd.h>
 #include <kernels/blas_core.cuh>
 
 namespace quda {
 
-  namespace reducer {
-    void init();
-    void destroy();
-  }
-  
   namespace blas {
 
-    unsigned long long flops;
-    unsigned long long bytes;
-
-    static qudaStream_t *blasStream;
-
-    template <template <typename real> class Functor, typename store_t, typename y_store_t,
-              int nSpin, typename coeff_t>
-    class Blas : public Tunable
+    template <template <typename real> class Functor, typename store_t, typename y_store_t, int nSpin, typename coeff_t>
+    class Blas : public TunableGridStrideKernel3D
     {
       using real = typename mapper<y_store_t>::type;
       Functor<real> f;
       const int nParity; // for composite fields this includes the number of composites
 
-      const coeff_t &a, &b, &c;
-      ColorSpinorField &x, &y, &z, &w, &v;
-      const QudaFieldLocation location;
+      coeff_t a, b, c;
+      cvector_ref<ColorSpinorField> &x, &y, &z, &w, &v;
 
-      unsigned int sharedBytesPerThread() const { return 0; }
-      unsigned int sharedBytesPerBlock(const TuneParam &param) const { return 0; }
-
-      bool tuneSharedBytes() const { return false; }
-
+      bool tuneSharedBytes() const override { return false; }
       // for these streaming kernels, there is no need to tune the grid size, just use max
-      unsigned int minGridSize() const { return maxGridSize(); }
+      unsigned int minGridSize() const override { return maxGridSize(); }
 
     public:
-      Blas(const coeff_t &a, const coeff_t &b, const coeff_t &c, ColorSpinorField &x,
-           ColorSpinorField &y, ColorSpinorField &z, ColorSpinorField &w, ColorSpinorField &v) :
+      template <typename Vx, typename Vy, typename Vz, typename Vw, typename Vv>
+      Blas(const coeff_t &a, const coeff_t &b, const coeff_t &c, Vx &x, Vy &y, Vz &z, Vw &w, Vv &v) :
+        TunableGridStrideKernel3D(x[0], x.size(), (x[0].IsComposite() ? x[0].CompositeDim() : 1) * x.SiteSubset()),
         f(a, b, c),
-        nParity((x.IsComposite() ? x.CompositeDim() : 1) * x.SiteSubset()),
+        nParity(vector_length_z),
         a(a),
         b(b),
         c(c),
-        x(x),
-        y(y),
-        z(z),
-        w(w),
-        v(v),
-        location(checkLocation(x, y, z, w, v))
+        x(reinterpret_cast<cvector_ref<ColorSpinorField> &>(x)),
+        y(reinterpret_cast<cvector_ref<ColorSpinorField> &>(y)),
+        z(reinterpret_cast<cvector_ref<ColorSpinorField> &>(z)),
+        w(reinterpret_cast<cvector_ref<ColorSpinorField> &>(w)),
+        v(reinterpret_cast<cvector_ref<ColorSpinorField> &>(v))
       {
+        if (a.size() != x.size()) this->a.resize(x.size(), a.size() == 1 ? a[0] : 0.0);
+        if (b.size() != x.size()) this->b.resize(x.size(), b.size() == 1 ? b[0] : 0.0);
+        if (c.size() != x.size()) this->c.resize(x.size(), c.size() == 1 ? c[0] : 0.0);
+        check_size(this->a, this->b, this->c, x, y, z, w, v);
+        checkLocation(x, y, z, w, v);
         checkLength(x, y, z, w, v);
         auto x_prec = checkPrecision(x, z, w);
         auto y_prec = checkPrecision(y, v);
@@ -68,32 +50,23 @@ namespace quda {
         if (sizeof(y_store_t) != y_prec) errorQuda("Expected precision %lu but received %d", sizeof(y_store_t), y_prec);
         if (x_prec == y_prec && x_order != y_order) errorQuda("Orders %d %d do not match", x_order, y_order);
 
-        strcpy(aux, x.AuxString());
         if (x_prec != y_prec) {
           strcat(aux, ",");
-          strcat(aux, y.AuxString());
+          strcat(aux, y.AuxString().c_str());
         }
-        if (location == QUDA_CPU_FIELD_LOCATION) strcat(aux, ",CPU");
+        setRHSstring(aux, x.size());
 
-#ifdef JITIFY
-        ::quda::create_jitify_program("kernels/blas_core.cuh");
-#endif
-
-        apply(*blasStream);
-
-        blas::bytes += bytes();
-        blas::flops += flops();
+        apply(device::get_default_stream());
       }
 
-      TuneKey tuneKey() const { return TuneKey(x.VolString(), typeid(f).name(), aux); }
+      TuneKey tuneKey() const override { return TuneKey(vol, typeid(f).name(), aux); }
 
-      void apply(const qudaStream_t &stream)
+      void apply(const qudaStream_t &stream) override
       {
         constexpr bool site_unroll_check = !std::is_same<store_t, y_store_t>::value || isFixed<store_t>::value;
         if (site_unroll_check && (x.Ncolor() != 3 || x.Nspin() == 2))
           errorQuda("site unroll not supported for nSpin = %d nColor = %d", x.Nspin(), x.Ncolor());
 
-        TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
         if (location == QUDA_CUDA_FIELD_LOCATION) {
           if (site_unroll_check) checkNative(x, y, z, w, v); // require native order when using site_unroll
           using device_store_t = typename device_type_mapper<store_t>::type;
@@ -106,18 +79,11 @@ namespace quda {
           constexpr int N = n_vector<device_store_t, true, nSpin, site_unroll>();
           constexpr int Ny = n_vector<device_y_store_t, true, nSpin, site_unroll>();
           constexpr int M = site_unroll ? (nSpin == 4 ? 24 : 6) : N; // real numbers per thread
-          const int length = x.Length() / (nParity * M);
+          const int threads = x.Length() / (nParity * M);
 
-          BlasArg<device_store_t, N, device_y_store_t, Ny, decltype(f_)> arg(x, y, z, w, v, f_, length, nParity);
-#ifdef JITIFY
-          using namespace jitify::reflection;
-          jitify_error = program->kernel("quda::blas::blasKernel")
-            .instantiate(Type<device_real_t>(), M, Type<decltype(arg)>())
-            .configure(tp.grid, tp.block, tp.shared_bytes, stream)
-            .launch(arg);
-#else
-          qudaLaunchKernel(blasKernel<device_real_t, M, decltype(arg)>, tp, stream, arg);
-#endif
+          TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
+          BlasArg<device_real_t, M, device_store_t, N, device_y_store_t, Ny, decltype(f_)> arg(x, y, z, w, v, f_, threads, nParity);
+          launch<Blas_>(tp, stream, arg);
         } else {
           if (checkOrder(x, y, z, w, v) != QUDA_SPACE_SPIN_COLOR_FIELD_ORDER)
             errorQuda("CPU Blas functions expect AoS field order");
@@ -132,14 +98,16 @@ namespace quda {
           constexpr int N = n_vector<host_store_t, false, nSpin, site_unroll>();
           constexpr int Ny = n_vector<host_y_store_t, false, nSpin, site_unroll>();
           constexpr int M = N; // if site unrolling then M=N will be 24/6, e.g., full AoS
-          const int length = x.Length() / (nParity * M);
+          const int threads = x.Length() / (nParity * M);
 
-          BlasArg<host_store_t, N, host_y_store_t, Ny, decltype(f_)> arg(x, y, z, w, v, f_, length, nParity);
-          blasCPU<host_real_t, M>(arg);
+          TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
+          BlasArg<host_real_t, M, host_store_t, N, host_y_store_t, Ny, decltype(f_)> arg(x, y, z, w, v, f_, threads, nParity);
+
+          launch_host<Blas_>(tp, stream, arg);
         }
       }
 
-      void preTune()
+      void preTune() override
       {
         if (f.write.X) x.backup();
         if (f.write.Y) y.backup();
@@ -148,7 +116,7 @@ namespace quda {
         if (f.write.V) v.backup();
       }
 
-      void postTune()
+      void postTune() override
       {
         if (f.write.X) x.restore();
         if (f.write.Y) y.restore();
@@ -157,131 +125,132 @@ namespace quda {
         if (f.write.V) v.restore();
       }
 
-      bool advanceTuneParam(TuneParam &param) const
+      bool advanceTuneParam(TuneParam &param) const override
       {
         return location == QUDA_CPU_FIELD_LOCATION ? false : Tunable::advanceTuneParam(param);
       }
 
-      void initTuneParam(TuneParam &param) const
-      {
-        Tunable::initTuneParam(param);
-        param.grid.y = nParity;
-      }
-
-      void defaultTuneParam(TuneParam &param) const
-      {
-        Tunable::initTuneParam(param);
-        param.grid.y = nParity;
-      }
-
-      long long flops() const { return f.flops() * x.Length(); }
-      long long bytes() const
+      long long flops() const override { return f.flops() * x.Length() * x.size(); }
+      long long bytes() const override
       {
         return (f.read.X + f.write.X) * x.Bytes() + (f.read.Y + f.write.Y) * y.Bytes() +
           (f.read.Z + f.write.Z) * z.Bytes() + (f.read.W + f.write.W) * w.Bytes() + (f.read.V + f.write.V) * v.Bytes();
       }
-      int tuningIter() const { return 3; }
     };
 
-    void zero(ColorSpinorField &a) {
-      if (typeid(a) == typeid(cudaColorSpinorField)) {
-	static_cast<cudaColorSpinorField&>(a).zero();
-      } else {
-	static_cast<cpuColorSpinorField&>(a).zero();
+    // split the fields and recurse if needed
+    template <template <typename real> class Functor, bool mixed, typename coeff_t, typename X, typename Y, typename Z,
+              typename W, typename V>
+    void instantiateBlas(const coeff_t &a, const coeff_t &b, const coeff_t &c, X &x, Y &y, Z &z, W &w, V &v)
+    {
+      if (x.size() > get_max_multi_rhs()) {
+        instantiateBlas<Functor, mixed, coeff_t, X, Y, Z, W, V>(
+          a, b, c, {x.begin(), x.begin() + x.size() / 2}, {y.begin(), y.begin() + y.size() / 2},
+          {z.begin(), z.begin() + z.size() / 2}, {w.begin(), w.begin() + w.size() / 2},
+          {v.begin(), v.begin() + v.size() / 2});
+        instantiateBlas<Functor, mixed, coeff_t, X, Y, Z, W, V>(
+          a, b, c, {x.begin() + x.size() / 2, x.end()}, {y.begin() + y.size() / 2, y.end()},
+          {z.begin() + z.size() / 2, z.end()}, {w.begin() + w.size() / 2, w.end()}, {v.begin() + v.size() / 2, v.end()});
+        return;
       }
+
+      instantiate<Functor, Blas, mixed>(a, b, c, x, y, z, w, v);
     }
 
-    void init()
+    void axpbyz(cvector<double> &a, cvector_ref<const ColorSpinorField> &x, cvector<double> &b,
+                cvector_ref<const ColorSpinorField> &y, cvector_ref<ColorSpinorField> &z)
     {
-      blasStream = &streams[Nstream-1];
-      reducer::init();
+      instantiateBlas<axpbyz_, true>(a, b, cvector<double>(), x, y, x, x, z);
     }
 
-    void destroy(void)
+    void axy(const cvector<Complex> &a, cvector_ref<const ColorSpinorField> &x, cvector_ref<ColorSpinorField> &y)
     {
-      reducer::destroy();
+      instantiateBlas<axy_, false>(a, cvector<Complex>(), cvector<Complex>(), x, y, y, y, y);
     }
 
-    qudaStream_t* getStream() { return blasStream; }
-
-    void axpbyz(double a, ColorSpinorField &x, double b, ColorSpinorField &y, ColorSpinorField &z)
+    void caxpy(cvector<Complex> &a, cvector_ref<const ColorSpinorField> &x, cvector_ref<ColorSpinorField> &y)
     {
-      instantiate<axpbyz_, Blas, true>(a, b, 0.0, x, y, x, x, z);
+      instantiateBlas<caxpy_, true>(a, cvector<Complex>(), cvector<Complex>(), x, y, x, x, y);
     }
 
-    void ax(double a, ColorSpinorField &x)
+    void caxpby(cvector<Complex> &a, cvector_ref<const ColorSpinorField> &x, cvector<Complex> &b,
+                cvector_ref<ColorSpinorField> &y)
     {
-      instantiate<ax_, Blas, false>(a, 0.0, 0.0, x, x, x, x, x);
+      instantiateBlas<caxpby_, false>(a, b, cvector<Complex>(), x, y, x, x, y);
     }
 
-    void caxpy(const Complex &a, ColorSpinorField &x, ColorSpinorField &y)
+    void axpbypczw(cvector<double> &a, cvector_ref<const ColorSpinorField> &x, cvector<double> &b,
+                   cvector_ref<const ColorSpinorField> &y, cvector<double> &c, cvector_ref<const ColorSpinorField> &z,
+                   cvector_ref<ColorSpinorField> &w)
     {
-      instantiate<caxpy_, Blas, true>(a, Complex(0.0), Complex(0.0), x, y, x, x, y);
+      instantiateBlas<axpbypczw_, false>(a, b, c, x, y, z, w, y);
     }
 
-    void caxpby(const Complex &a, ColorSpinorField &x, const Complex &b, ColorSpinorField &y)
+    void cxpaypbz(cvector_ref<const ColorSpinorField> &x, cvector<Complex> &a, cvector_ref<const ColorSpinorField> &y,
+                  cvector<Complex> &b, cvector_ref<ColorSpinorField> &z)
     {
-      instantiate<caxpby_, Blas, false>(a, b, Complex(0.0), x, y, x, x, y);
+      instantiateBlas<cxpaypbz_, false>(a, b, cvector<Complex>(), x, y, z, x, y);
     }
 
-    void caxpbypczw(const Complex &a, ColorSpinorField &x, const Complex &b, ColorSpinorField &y, const Complex &c,
-                    ColorSpinorField &z, ColorSpinorField &w)
+    void axpyBzpcx(cvector<double> &a, cvector_ref<ColorSpinorField> &x, cvector_ref<ColorSpinorField> &y,
+                   cvector<double> &b, cvector_ref<const ColorSpinorField> &z, cvector<double> &c)
     {
-      instantiate<caxpbypczw_, Blas, false>(a, b, c, x, y, z, w, y);
+      instantiateBlas<axpyBzpcx_, true>(a, b, c, x, y, z, x, y);
     }
 
-    void cxpaypbz(ColorSpinorField &x, const Complex &a, ColorSpinorField &y, const Complex &b, ColorSpinorField &z)
+    void axpyZpbx(cvector<double> &a, cvector_ref<ColorSpinorField> &x, cvector_ref<ColorSpinorField> &y,
+                  cvector_ref<const ColorSpinorField> &z, cvector<double> &b)
     {
-      instantiate<caxpbypczw_, Blas, false>(Complex(1.0), a, b, x, y, z, z, y);
+      instantiateBlas<axpyZpbx_, true>(a, b, cvector<double>(), x, y, z, x, y);
     }
 
-    void axpyBzpcx(double a, ColorSpinorField& x, ColorSpinorField& y, double b, ColorSpinorField& z, double c)
+    void caxpyBzpx(cvector<Complex> &a, cvector_ref<ColorSpinorField> &x, cvector_ref<ColorSpinorField> &y,
+                   cvector<Complex> &b, cvector_ref<const ColorSpinorField> &z)
     {
-      instantiate<axpyBzpcx_, Blas, true>(a, b, c, x, y, z, x, y);
+      instantiateBlas<caxpyBzpx_, true>(a, b, cvector<Complex>(), x, y, z, x, y);
     }
 
-    void axpyZpbx(double a, ColorSpinorField& x, ColorSpinorField& y, ColorSpinorField& z, double b)
+    void caxpyBxpz(cvector<Complex> &a, cvector_ref<const ColorSpinorField> &x, cvector_ref<ColorSpinorField> &y,
+                   cvector<Complex> &b, cvector_ref<ColorSpinorField> &z)
     {
-      instantiate<axpyZpbx_, Blas, true>(a, b, 0.0, x, y, z, x, y);
+      instantiateBlas<caxpyBxpz_, true>(a, b, cvector<Complex>(), x, y, z, x, y);
     }
 
-    void caxpyBzpx(const Complex &a, ColorSpinorField &x, ColorSpinorField &y, const Complex &b, ColorSpinorField &z)
+    void caxpbypzYmbw(cvector<Complex> &a, cvector_ref<const ColorSpinorField> &x, cvector<Complex> &b,
+                      cvector_ref<ColorSpinorField> &y, cvector_ref<ColorSpinorField> &z,
+                      cvector_ref<const ColorSpinorField> &w)
     {
-      instantiate<caxpyBzpx_, Blas, true>(a, b, Complex(0.0), x, y, z, x, y);
+      instantiateBlas<caxpbypzYmbw_, false>(a, b, cvector<Complex>(), x, y, z, w, y);
     }
 
-    void caxpyBxpz(const Complex &a, ColorSpinorField &x, ColorSpinorField &y, const Complex &b, ColorSpinorField &z)
+    void cabxpyAx(cvector<double> &ar, cvector<Complex> &b, cvector_ref<ColorSpinorField> &x,
+                  cvector_ref<ColorSpinorField> &y)
     {
-      instantiate<caxpyBxpz_, Blas, true>(a, b, Complex(0.0), x, y, z, x, y);
+      vector<Complex> a(ar.size());
+      for (auto i = 0u; i < ar.size(); i++) a[i] = Complex(ar[i]);
+      instantiateBlas<cabxpyAx_, false>(a, b, cvector<Complex>(), x, y, x, x, y);
     }
 
-    void caxpbypzYmbw(const Complex &a, ColorSpinorField &x, const Complex &b, ColorSpinorField &y, ColorSpinorField &z, ColorSpinorField &w)
+    void caxpyXmaz(cvector<Complex> &a, cvector_ref<ColorSpinorField> &x, cvector_ref<ColorSpinorField> &y,
+                   cvector_ref<const ColorSpinorField> &z)
     {
-      instantiate<caxpbypzYmbw_, Blas, false>(a, b, Complex(0.0), x, y, z, w, y);
+      instantiateBlas<caxpyxmaz_, false>(a, cvector<Complex>(), cvector<Complex>(), x, y, z, x, y);
     }
 
-    void cabxpyAx(double a, const Complex &b, ColorSpinorField &x, ColorSpinorField &y)
-    {
-      instantiate<cabxpyAx_, Blas, false>(Complex(a), b, Complex(0.0), x, y, x, x, y);
-    }
-
-    void caxpyXmaz(const Complex &a, ColorSpinorField &x, ColorSpinorField &y, ColorSpinorField &z)
-    {
-      instantiate<caxpyxmaz_, Blas, false>(a, Complex(0.0), Complex(0.0), x, y, z, x, y);
-    }
-
-    void caxpyXmazMR(const double &a, ColorSpinorField &x, ColorSpinorField &y, ColorSpinorField &z)
+    void caxpyXmazMR(cvector<double> &a, cvector_ref<ColorSpinorField> &x, cvector_ref<ColorSpinorField> &y,
+                     cvector_ref<const ColorSpinorField> &z)
     {
       if (!commAsyncReduction())
 	errorQuda("This kernel requires asynchronous reductions to be set");
-      if (x.Location() == QUDA_CPU_FIELD_LOCATION)
-	errorQuda("This kernel cannot be run on CPU fields");
-      instantiate<caxpyxmazMR_, Blas, false>(a, 0.0, 0.0, x, y, z, y, y);
+      if (x.Location() == QUDA_CPU_FIELD_LOCATION) errorQuda("This kernel cannot be run on CPU fields");
+      instantiateBlas<caxpyxmazMR_, false>(a, cvector<double>(), cvector<double>(), x, y, z, y, y);
     }
 
-    void tripleCGUpdate(double a, double b, ColorSpinorField &x, ColorSpinorField &y, ColorSpinorField &z, ColorSpinorField &w)
+    void tripleCGUpdate(cvector<double> &a, cvector<double> &b, cvector_ref<const ColorSpinorField> &x,
+                        cvector_ref<ColorSpinorField> &y, cvector_ref<ColorSpinorField> &z,
+                        cvector_ref<ColorSpinorField> &w)
     {
-      instantiate<tripleCGUpdate_, Blas, true>(a, b, 0.0, x, y, z, w, y);
+      instantiateBlas<tripleCGUpdate_, true>(a, b, cvector<double>(), x, y, z, w, y);
     }
 
   } // namespace blas
