@@ -124,9 +124,9 @@ namespace quda {
 	errorQuda("ContractQQArg: QuarkQQ Contractions support only nVec = %d. Got nVec = %d\n", QUDA_NVEC_PROP, nVec);
 
       for(int ivec=0;ivec<nVec;ivec++){
-        pIn1[ivec].init(*propIn1[ivec]);
-        pIn2[ivec].init(*propIn2[ivec]);
-        pOut[ivec].init(*propOut[ivec]);
+        pIn1[ivec] = Propagator(*propIn1[ivec]);
+        pIn2[ivec] = Propagator(*propIn2[ivec]);
+        pOut[ivec] = Propagator(*propOut[ivec]);
       }
 
     }
@@ -140,7 +140,6 @@ namespace quda {
     Propagator prop2[QUDA_MAX_NVEC]; // Propagators
     Propagator prop3[QUDA_MAX_NVEC]; //
     
-    const int nVec;                   // Number of vectors within Propagator Structure (for "regular" prop, nVec = 12)
     const qluaCntr_Type cntrType;     // contraction type
     const int parity;                 // hard code to 0 for now
     const int nParity;                // number of parities we're working on
@@ -151,10 +150,12 @@ namespace quda {
     const int volumeCB;               // checkerboarded volume
     const int volume;                 // full-site local volume
     const bool preserveBasis;         // whether to preserve the gamma basis or not
+    const int nVec;                   // Number of vectors within Propagator Structure (for "regular" prop, nVec = 12)
     
-    QluaContractArg(cudaColorSpinorField **propIn1,
-		    cudaColorSpinorField **propIn2,
-		    cudaColorSpinorField **propIn3,
+    // XXX propInX loc on dev !!
+    QluaContractArg(ColorSpinorField **propIn1,
+		    ColorSpinorField **propIn2,
+		    ColorSpinorField **propIn3,
 		    qluaCntr_Type cntrType, bool preserveBasis, int nVec_)
       : cntrType(cntrType), parity(0), nParity(propIn1[0]->SiteSubset()), nFace(1),
 	dim{ (3-nParity) * propIn1[0]->X(0), propIn1[0]->X(1), propIn1[0]->X(2), propIn1[0]->X(3), 1 },
@@ -167,14 +168,14 @@ namespace quda {
 	errorQuda("QluaContractArg: Ultra-local contractions apart from qbarq_g_F_aB support only nVec = %d. Got nVec = %d\n", QUDA_NVEC_PROP, nVec);
 
       for(int ivec=0;ivec<nVec;ivec++){
-        prop1[ivec].init(*propIn1[ivec]);
-        prop2[ivec].init(*propIn2[ivec]);
+        prop1[ivec] = Propagator(*propIn1[ivec]);
+        prop2[ivec] = Propagator(*propIn2[ivec]);
       }
       
       if(cntrType == what_baryon_sigma_UUS){
         if(propIn3 == NULL) errorQuda("QluaContractArg: Input propagator-3 is not allocated!\n");
         for(int ivec=0;ivec<nVec;ivec++)
-          prop3[ivec].init(*propIn3[ivec]);
+          prop3[ivec] = Propagator(*propIn3[ivec]);
       }
     }
 
@@ -197,6 +198,7 @@ namespace quda {
     
     ArgGeom () {}
 
+    // XXX loc on dev ??
     ArgGeom(ColorSpinorField *x)
       : parity(0), nParity(x->SiteSubset()), nFace(1),
     	dim{ (3-nParity) * x->X(0), x->X(1), x->X(2), x->X(3), 1 },
@@ -205,7 +207,8 @@ namespace quda {
         volumeCB(x->VolumeCB()), volume(x->Volume())
     { }
 
-    ArgGeom(cudaGaugeField *u) 
+    // XXX loc on dev ??
+    ArgGeom(GaugeField *u) 
       : parity(0), nParity(u->SiteSubset()), nFace(1),
         commDim{comm_dim_partitioned(0), comm_dim_partitioned(1), comm_dim_partitioned(2), comm_dim_partitioned(3)},
         lL{u->X()[0], u->X()[1], u->X()[2], u->X()[3]}
@@ -238,13 +241,10 @@ namespace quda {
     
     Propagator src;
     Propagator dst;
-    
+    // XXX loc on dev ??
     Arg_ShiftCudaVec_nonCov(ColorSpinorField *dst_, ColorSpinorField *src_)
-      : ArgGeom(src_)
-    {
-      src.init(*src_);
-      dst.init(*dst_);
-    }
+      : ArgGeom(src_), src(*src_), dst(*dst_)
+    {}
   };
 
   struct Arg_ShiftCudaVec_Cov : public ArgGeom {
@@ -254,14 +254,11 @@ namespace quda {
     GaugeU U;
 
     bool extendedGauge;
-
-    Arg_ShiftCudaVec_Cov(ColorSpinorField *dst_, ColorSpinorField *src_, cudaGaugeField *gf_) 
-      :	ArgGeom(gf_), extendedGauge((gf_->GhostExchange() == QUDA_GHOST_EXCHANGE_EXTENDED) ? true : false)
-    {
-      src.init(*src_);
-      dst.init(*dst_);
-      U.init(*gf_);
-    }
+    // XXX  loc on dev ??
+    Arg_ShiftCudaVec_Cov(ColorSpinorField *dst_, ColorSpinorField *src_, GaugeField *gf_) 
+      :	ArgGeom(gf_), src(*src_), dst(*dst_), U(*gf_),
+        extendedGauge((gf_->GhostExchange() == QUDA_GHOST_EXCHANGE_EXTENDED) ? true : false)
+    {}
   };
   //---------------------------------------------------------------------
   
@@ -270,65 +267,53 @@ namespace quda {
 
     GaugeU src, dst;
 
-    Arg_ShiftGauge_nonCov(cudaGaugeField *dst_, cudaGaugeField *src_)
-      : ArgGeom(src_)
-    {
-      src.init(*src_);
-      dst.init(*dst_);
-    }
+    // XXX loc on dev !!
+    Arg_ShiftGauge_nonCov(GaugeField *dst_, GaugeField *src_)
+      : ArgGeom(src_), src(*src_), dst(*dst_)
+    {}
   };
   
   struct Arg_ShiftLink_Cov : public ArgGeom {
-
     int i_src, i_dst;
     GaugeU src, dst;
     GaugeU gf_u;
 
-    Arg_ShiftLink_Cov(cudaGaugeField *dst_, int i_dst_,
-		      cudaGaugeField *src_, int i_src_, 
-		      cudaGaugeField *gf_u_)
-      : ArgGeom(gf_u_), i_src(i_src_), i_dst(i_dst_)
-    {
-      src.init(*src_);
-      dst.init(*dst_);
-      gf_u.init(*gf_u_);
-    }
+    // XXX loc on dev !!
+    Arg_ShiftLink_Cov(GaugeField *dst_, int i_dst_,
+		      GaugeField *src_, int i_src_, 
+		      GaugeField *gf_u_)
+      : ArgGeom(gf_u_), i_src(i_src_), i_dst(i_dst_), 
+        src(*src_), dst(*dst_), gf_u(*gf_u_)
+    {}
   };
 
   struct Arg_ShiftLink_AdjSplitCov : public ArgGeom {
-
+    int i_src, i_dst;
     GaugeU src, dst;
     GaugeU gf_u, bsh_u;
-    int i_src, i_dst;
 
-    Arg_ShiftLink_AdjSplitCov(cudaGaugeField *dst_, int i_dst_,
-			      cudaGaugeField *src_, int i_src_,
-			      cudaGaugeField *gf_u_, cudaGaugeField *bsh_u_)
-      : ArgGeom(gf_u_), i_src(i_src_), i_dst(i_dst_)
-    {
-      src.init(*src_);
-      dst.init(*dst_);
-      gf_u.init(*gf_u_);
-      bsh_u.init(*bsh_u_);
-    }
+    // XXX check *dst_,src_,gf_u_,bsh_u_ loc on dev
+    Arg_ShiftLink_AdjSplitCov(GaugeField *dst_, int i_dst_,
+			      GaugeField *src_, int i_src_,
+			      GaugeField *gf_u_, GaugeField *bsh_u_)
+      : ArgGeom(gf_u_), i_src(i_src_), i_dst(i_dst_),
+      src(*src_), dst(*dst_), gf_u(*gf_u_), bsh_u(*bsh_u_)
+    {}
   };
   //---------------------------------------------------------------------
 
 
   struct Arg_SetUnityLink : public ArgGeom {
-
-    GaugeU U;
     int mu;
-
+    GaugeU U;
     bool extendedGauge;
-
     complex<QUDA_REAL> unityU[QUDA_Nc*QUDA_Nc];
 
-    Arg_SetUnityLink(cudaGaugeField *U_, int mu_)
-      : ArgGeom(U_), mu(mu_), extendedGauge((U_->GhostExchange() == QUDA_GHOST_EXCHANGE_EXTENDED) ? true : false)
+    // XXX loc on dev !!
+    Arg_SetUnityLink(GaugeField *U_, int mu_)
+      : ArgGeom(U_), mu(mu_), U(*U_),
+        extendedGauge((U_->GhostExchange() == QUDA_GHOST_EXCHANGE_EXTENDED) ? true : false)
     {
-      U.init(*U_);
-      
       for(int ic=0;ic<QUDA_Nc;ic++){
         for(int jc=0;jc<QUDA_Nc;jc++){
 	  if(ic==jc) unityU[jc + QUDA_Nc*ic] = complex<QUDA_REAL> {1.0,0.0};
@@ -341,26 +326,21 @@ namespace quda {
 
 
   struct Arg_CopyCudaLink : public ArgGeom {
-
-    GaugeU Udst;
-    GaugeU Usrc;
-    int i_dst, i_src;
-
-    bool extendedGauge_dst;
+    int i_src, i_dst;
+    GaugeU Usrc, Udst;
     bool extendedGauge_src;
+    bool extendedGauge_dst;
     bool extendedGauge;
 
-    Arg_CopyCudaLink(cudaGaugeField *Udst_, int i_dst_, cudaGaugeField *Usrc_, int i_src_)
-      : ArgGeom(Usrc_), i_dst(i_dst_), i_src(i_src_),
+    // XXX loc on dev !!
+    Arg_CopyCudaLink(GaugeField *Udst_, int i_dst_, GaugeField *Usrc_, int i_src_)
+      : ArgGeom(Usrc_), i_src(i_src_), i_dst(i_dst_), Usrc(*Usrc_), Udst(*Udst_),
 	extendedGauge_src((Usrc_->GhostExchange() == QUDA_GHOST_EXCHANGE_EXTENDED) ? true : false),
 	extendedGauge_dst((Udst_->GhostExchange() == QUDA_GHOST_EXCHANGE_EXTENDED) ? true : false)
     {
       if(extendedGauge_src != extendedGauge_dst)
 	errorQuda("Arg_CopyCudaLink: Source and Destination GaugeFields ghost properties differ!\n");
       extendedGauge = extendedGauge_src;
-      
-      Udst.init(*Udst_);
-      Usrc.init(*Usrc_);
     }
   };
   //---------------------------------------------------------------------
@@ -372,23 +352,23 @@ namespace quda {
     Propagator bwdProp[QUDA_MAX_NVEC];
     GaugeU U;
 
-    int nVec;
     int i_mu;
     bool preserveBasis;
     bool extendedGauge;
+    int nVec;
 
     qcTMD_Arg () {}
     
-    qcTMD_Arg(cudaColorSpinorField **fwdProp_, cudaColorSpinorField **bwdProp_,
-	      cudaGaugeField *U_, int i_mu_, bool preserveBasis_, int nVec_)
-      : ArgGeom(U_), i_mu(i_mu_), preserveBasis(preserveBasis_),
+    // XXX loc on dev !!
+    qcTMD_Arg(ColorSpinorField **fwdProp_, ColorSpinorField **bwdProp_,
+	      GaugeField *U_, int i_mu_, bool preserveBasis_, int nVec_)
+      : ArgGeom(U_), U(*U_), i_mu(i_mu_), preserveBasis(preserveBasis_),
       extendedGauge((U_->GhostExchange() == QUDA_GHOST_EXCHANGE_EXTENDED) ? true : false), nVec(nVec_)
     {
       for(int ivec=0;ivec<nVec;ivec++){
-	fwdProp[ivec].init(*fwdProp_[ivec]);
-	bwdProp[ivec].init(*bwdProp_[ivec]);
+	fwdProp[ivec] = Propagator(*fwdProp_[ivec]);
+	bwdProp[ivec] = Propagator(*bwdProp_[ivec]);
       }
-      U.init(*U_);
     }
 
   };

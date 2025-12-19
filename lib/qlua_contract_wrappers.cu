@@ -121,8 +121,8 @@ namespace quda {
     return shfType;
   }
   //---------------------------------------------------------------------------
-  qcTMD_ShiftDir qcParseShiftDirection(qcTMD_ShiftFlag shfFlag){
-
+  qcTMD_ShiftDir qcParseShiftDirection(qcTMD_ShiftFlag shfFlag)
+  {
     qcTMD_ShiftDir shfDir = qcShfDirNone;
     switch(shfFlag){
     case qcShfStr_x:
@@ -147,8 +147,8 @@ namespace quda {
     return shfDir;
   }
   //---------------------------------------------------------------------------
-  qcTMD_ShiftSgn qcParseShiftSign(qcTMD_ShiftFlag shfFlag, bool flipShfSgn=false){
-
+  qcTMD_ShiftSgn qcParseShiftSign(qcTMD_ShiftFlag shfFlag, bool flipShfSgn=false)
+  {
     qcTMD_ShiftSgn shfSgn = qcShfSgnNone;
     switch(shfFlag){
     case qcShfStr_X:
@@ -171,20 +171,23 @@ namespace quda {
     return shfSgn;
   }
   //---------------------------------------------------------------------------
-
-  void qcCopyExtendedGaugeField(cudaGaugeField *dst, cudaGaugeField *src, const int *R){
-
+  void qcCopyExtendedGaugeField(GaugeField *dst, GaugeField *src, const int *R)
+  {
+    LOC_CUDA(*dst);
+    LOC_CUDA(*src);
     if( (dst->GhostExchange() != QUDA_GHOST_EXCHANGE_EXTENDED) ||
 	(src->GhostExchange() != QUDA_GHOST_EXCHANGE_EXTENDED) )
       errorQuda("%s: Support only extended Gauge Fields!\n", __func__);
 
     copyExtendedGauge(*dst, *src, QUDA_CUDA_FIELD_LOCATION);
-    dst->exchangeExtendedGhost(R, QCredundantComms);
+    dst->exchangeExtendedGhost(mk_latdim(R, QUDA_NDIM), QCredundantComms);
   }
   //---------------------------------------------------------------------------
 
-  void qcCopyCudaLink(cudaGaugeField *dst, int i_dst, cudaGaugeField *src, int i_src, const int *R){
-
+  void qcCopyCudaLink(GaugeField *dst, int i_dst, GaugeField *src, int i_src, const int *R)
+  {
+    LOC_CUDA(*dst);
+    LOC_CUDA(*src);
     Arg_CopyCudaLink arg(dst, i_dst, src, i_src);
     Arg_CopyCudaLink *arg_dev;
     cudaMalloc((void**)&(arg_dev), sizeof(arg));
@@ -201,15 +204,14 @@ namespace quda {
     cudaDeviceSynchronize();
     checkCudaError();
 
-    dst->exchangeExtendedGhost(R, QCredundantComms);
+    dst->exchangeExtendedGhost(mk_latdim(R, QUDA_NDIM), QCredundantComms);
 
     cudaFree(arg_dev);
     arg_dev = NULL;
   }
   //---------------------------------------------------------------------------
-
-  void qcSetGaugeToUnity(cudaGaugeField *U, int mu, const int *R){
-
+  void qcSetGaugeToUnity(GaugeField *U, int mu, const int *R){
+    LOC_CUDA(*U);
     Arg_SetUnityLink arg(U, mu);
     Arg_SetUnityLink *arg_dev;
     cudaMalloc((void**)&(arg_dev), sizeof(arg));
@@ -226,7 +228,7 @@ namespace quda {
     cudaDeviceSynchronize();
     checkCudaError();
 
-    U->exchangeExtendedGhost(R, QCredundantComms);
+    U->exchangeExtendedGhost(mk_latdim(R, QUDA_NDIM), QCredundantComms);
     
     cudaFree(arg_dev);
     arg_dev = NULL;
@@ -246,25 +248,37 @@ namespace quda {
   }
   //---------------------------------------------------------------------------
 
-  
-  void qcSwapCudaGauge(cudaGaugeField **x1, cudaGaugeField **x2){
-    cudaGaugeField *xtmp = *x1;
+  void qcSwapCudaGauge(GaugeField **x1, GaugeField **x2)
+  {
+    LOC_CUDA(**x1);
+    LOC_CUDA(**x2);
+    GaugeField *xtmp = *x1;
     *x1 = *x2;
     *x2 = xtmp;
   }
   //---------------------------------------------------------------------------
-  void qcSwapCudaVec(cudaColorSpinorField **x1, cudaColorSpinorField **x2){
-    cudaColorSpinorField *xtmp = *x1;
+  void qcSwapCudaVec(ColorSpinorField **x1, ColorSpinorField **x2)
+  {
+    LOC_CUDA(**x1);
+    LOC_CUDA(**x2);
+    ColorSpinorField *xtmp = *x1;
     *x1 = *x2;
     *x2 = xtmp;
   }
   //---------------------------------------------------------------------------
-  void qcCPUtoCudaVec(cudaColorSpinorField *cudaVec, cpuColorSpinorField *cpuVec){
+  void qcCPUtoCudaVec(ColorSpinorField *cudaVec, ColorSpinorField *cpuVec)
+  {
+    LOC_CUDA(*cudaVec);
+    LOC_CPU(*cpuVec);
     *cudaVec = *cpuVec;
   }  
-  void qcCPUtoCudaProp(cudaColorSpinorField **cudaProp, cpuColorSpinorField **cpuProp, int Nvec){
-    for(int i=0;i<Nvec;i++)
+  void qcCPUtoCudaProp(ColorSpinorField **cudaProp, ColorSpinorField **cpuProp, int Nvec)
+  {
+    for(int i=0;i<Nvec;i++) {
+      LOC_CUDA(*cudaProp[i]);
+      LOC_CPU(*cpuProp[i]);
       qcCPUtoCudaVec(cudaProp[i], cpuProp[i]);
+    }
   }
   //---------------------------------------------------------------------------
 
@@ -318,10 +332,12 @@ namespace quda {
     arg_dev = NULL;
   }//-- perform_ShiftCudaVec_nonCov
   //---------------------------------------------------------------------------
-  
-  void perform_ShiftCudaVec_Cov(ColorSpinorField *dst, ColorSpinorField *src, cudaGaugeField *gf,
-				qcTMD_ShiftFlag shfFlag){
-
+  void perform_ShiftCudaVec_Cov(ColorSpinorField *dst, ColorSpinorField *src, GaugeField *gf,
+				qcTMD_ShiftFlag shfFlag)
+  {
+    LOC_CUDA(*dst);
+    LOC_CUDA(*src);
+    LOC_CUDA(*gf);
     qcTMD_ShiftDir  shfDir  = qcParseShiftDirection(shfFlag);
     qcTMD_ShiftSgn  shfSgn  = qcParseShiftSign(shfFlag);     
     if( ((int)shfSgn>=0 && (int)shfSgn<2) && ((int)shfDir>=0 && (int)shfDir<4)  ){
@@ -358,10 +374,11 @@ namespace quda {
     arg_dev = NULL;
   }//-- perform_ShiftCudaVec_Cov
   //---------------------------------------------------------------------------
-
-  void perform_ShiftGauge_nonCov(cudaGaugeField *dst, cudaGaugeField *src,
-				 qcTMD_ShiftFlag shfFlag){
-
+  void perform_ShiftGauge_nonCov(GaugeField *dst, GaugeField *src,
+				 qcTMD_ShiftFlag shfFlag)
+  {
+    LOC_CUDA(*dst);
+    LOC_CUDA(*src);
     qcTMD_ShiftDir  shfDir  = qcParseShiftDirection(shfFlag);
     qcTMD_ShiftSgn  shfSgn  = qcParseShiftSign(shfFlag);     
     if( ((int)shfSgn>=0 && (int)shfSgn<2) && ((int)shfDir>=0 && (int)shfDir<4)  ){
@@ -399,9 +416,12 @@ namespace quda {
   }//-- perform_ShiftGauge_nonCov
   //---------------------------------------------------------------------------
 
-  void perform_ShiftLink_Cov(cudaGaugeField *dst, int i_dst, cudaGaugeField *src, int i_src,
-			     cudaGaugeField *gf, qcTMD_ShiftFlag shfFlag){
-
+  void perform_ShiftLink_Cov(GaugeField *dst, int i_dst, GaugeField *src, int i_src,
+			     GaugeField *gf, qcTMD_ShiftFlag shfFlag)
+  {
+    LOC_CUDA(*dst);
+    LOC_CUDA(*src);
+    LOC_CUDA(*gf);
     qcTMD_ShiftDir  shfDir  = qcParseShiftDirection(shfFlag);
     qcTMD_ShiftSgn  shfSgn  = qcParseShiftSign(shfFlag);     
     if( ((int)shfSgn>=0 && (int)shfSgn<2) && ((int)shfDir>=0 && (int)shfDir<4)  ){
@@ -439,10 +459,14 @@ namespace quda {
   }//-- perform_ShiftLink_Cov
   //---------------------------------------------------------------------------
 
-  void perform_ShiftLink_AdjSplitCov(cudaGaugeField *dst, int i_dst, cudaGaugeField *src, int i_src,
-				     cudaGaugeField *gf, cudaGaugeField *gf2,
-				     qcTMD_ShiftFlag shfFlag, bool flipShfSgn){
-
+  void perform_ShiftLink_AdjSplitCov(GaugeField *dst, int i_dst, GaugeField *src, int i_src,
+				     GaugeField *gf, GaugeField *gf2,
+				     qcTMD_ShiftFlag shfFlag, bool flipShfSgn)
+  {
+    LOC_CUDA(*dst);
+    LOC_CUDA(*src);
+    LOC_CUDA(*gf);
+    LOC_CUDA(*gf2);
     qcTMD_ShiftDir  shfDir  = qcParseShiftDirection(shfFlag);
     qcTMD_ShiftSgn  shfSgn  = qcParseShiftSign(shfFlag, flipShfSgn);
     if( ((int)shfSgn>=0 && (int)shfSgn<2) && ((int)shfDir>=0 && (int)shfDir<4)  ){
@@ -482,13 +506,13 @@ namespace quda {
 
 
   //-- Class for TMD contractions with shmem, make it tunable
-  class quarkContract : public TunableVectorY {
+  class quarkContract : public Tunable {
 
   protected:
     void *arg_dev;
-    const cudaColorSpinorField *meta;
-    qluaCntr_Type cntrType;
+    const ColorSpinorField *meta;
     complex<QUDA_REAL> *corrQuda_dev;
+    qluaCntr_Type cntrType;
     int Nc;
     int Ns;
     int blockdimZ;
@@ -517,31 +541,33 @@ namespace quda {
       return param.block.x * param.block.y * shmem_per_site ; 
     }
     virtual int blockStep() const { 
-      return /*FIXME*/4*((deviceProp.warpSize + blockdimZ - 1) / blockdimZ) ; 
+      return /*FIXME*/4*((device::warp_size() + blockdimZ - 1) / blockdimZ) ; 
     }
     virtual int blockMin() const { 
-      return /*FIXME*/4*((deviceProp.warpSize + blockdimZ - 1) / blockdimZ) ; 
+      return /*FIXME*/4*((device::warp_size() + blockdimZ - 1) / blockdimZ) ; 
     }
 
   public:
-    quarkContract(const cudaColorSpinorField *meta_, void *arg_dev_, 
+    quarkContract(const ColorSpinorField *meta_, void *arg_dev_, 
 		  complex<QUDA_REAL> *corrQuda_dev_, 
 		  qluaCntr_Type cntrType_,
 		  int blockdimZ_, size_t shmem_per_site_)
-      : TunableVectorY(meta_->SiteSubset()), meta(meta_),
-	arg_dev(arg_dev_), corrQuda_dev(corrQuda_dev_), cntrType(cntrType_), 
+      : arg_dev(arg_dev_), meta(meta_),
+        corrQuda_dev(corrQuda_dev_), cntrType(cntrType_), 
         Nc(QUDA_Nc), Ns(QUDA_Ns),
         blockdimZ(blockdimZ_), shmem_per_site(shmem_per_site_)
     {
-      strcpy(aux, meta_->AuxString());
-      strcat(aux, comm_dim_partitioned_string());
+      LOC_CUDA(*meta);
+      strncpy((char*)aux, meta_->AuxString().c_str(), sizeof(aux));
+      strncat((char*)aux, comm_dim_partitioned_string(), sizeof(aux));
     }
     virtual ~quarkContract() { }
 
     long long getFlops(){return flops();}
     long long getBytes(){return bytes();}
 
-    void apply(const cudaStream_t &stream) {
+    virtual void apply(const qudaStream_t &) override     // FIXME stream ignored
+    {
       TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
       if((cntrType != what_tmd_g_F_B)    &&
 	 (cntrType != what_qbarq_g_F_aB) &&
@@ -556,34 +582,34 @@ namespace quda {
 		   (long)tp.shared_bytes);
 
       if(cntrType == what_tmd_g_F_B)
-	tmd_g_U_D_aD_gvec_kernel<<<tp.grid, tp.block, tp.shared_bytes, stream>>>(corrQuda_dev, (qcTMD_Arg*)arg_dev);
+	tmd_g_U_D_aD_gvec_kernel<<<tp.grid, tp.block, tp.shared_bytes>>>(corrQuda_dev, (qcTMD_Arg*)arg_dev);
       if( (cntrType == what_qbarq_g_F_aB) || (cntrType == what_qpdf_g_F_B) || (cntrType == what_bb_g_F_B) )
-      	qbarq_g_P_aP_gvec_shMem_kernel<<<tp.grid, tp.block, tp.shared_bytes, stream>>>(corrQuda_dev, (QluaContractArg*)arg_dev);
+      	qbarq_g_P_aP_gvec_shMem_kernel<<<tp.grid, tp.block, tp.shared_bytes>>>(corrQuda_dev, (QluaContractArg*)arg_dev);
     }
 
     void initTuneParam(TuneParam &param) const
     {
-      TunableVectorY::initTuneParam(param);
+      Tunable::initTuneParam(param);
       param.block.z = blockdimZ;
       param.grid.z  = 1;
     }
     void defaultTuneParam(TuneParam &param) const
     {
-      TunableVectorY::defaultTuneParam(param);
+      Tunable::defaultTuneParam(param);
       param.block.z = blockdimZ;
       param.grid.z  = 1;
     }
 
-    TuneKey tuneKey() const { return TuneKey(meta->VolString(), typeid(*this).name(), aux); }
+    TuneKey tuneKey() const { return TuneKey(meta->VolString().c_str(), typeid(*this).name(), aux); }
   };
   //---------------------------------------------------------------------------
 
 
   //-Top-level function
   void QuarkContract_uLocal(complex<QUDA_REAL> *corrQuda_dev,
-			    cudaColorSpinorField **cudaProp1,
-			    cudaColorSpinorField **cudaProp2,
-			    cudaColorSpinorField **cudaProp3,
+			    ColorSpinorField **cudaProp1,
+			    ColorSpinorField **cudaProp2,
+			    ColorSpinorField **cudaProp3,
 			    complex<QUDA_REAL> *S2, complex<QUDA_REAL> *S1,
 			    qudaAPI_Param paramAPI){    
     
@@ -593,6 +619,11 @@ namespace quda {
 	(paramAPI.mpParam.cntrType == what_qpdf_g_F_B) ||
 	(paramAPI.mpParam.cntrType == what_bb_g_F_B) )
       errorQuda("%s: Contraction type %s not supported!\n", __func__, qcContractTypeStr[paramAPI.mpParam.cntrType]);
+    for (int i = 0 ; i < paramAPI.mpParam.nVec ; i++) {
+        LOC_CUDA(*cudaProp1[i]);
+        LOC_CUDA(*cudaProp2[i]);
+        LOC_CUDA(*cudaProp3[i]);
+    }
 
     QluaContractArg arg(cudaProp1, cudaProp2, cudaProp3, paramAPI.mpParam.cntrType, paramAPI.preserveBasis, paramAPI.mpParam.nVec); 
     QluaContractArg *arg_dev;
@@ -624,7 +655,7 @@ namespace quda {
 	printfQuda("%s: qbarq_gPaP::Flops = %lld\n", __func__, qbarq_gPaP.getFlops());
 	printfQuda("%s: qbarq_gPaP::Bytes = %lld\n", __func__, qbarq_gPaP.getBytes());
       }
-      qbarq_gPaP.apply(0);
+      qbarq_gPaP.apply(device::get_default_stream());
       cudaDeviceSynchronize();
       checkCudaError();
     } break;
@@ -677,7 +708,7 @@ namespace quda {
       }
 
       double t1 = MPI_Wtime();
-      contractTMD.apply(0);
+      contractTMD.apply(device::get_default_stream());
       cudaDeviceSynchronize();
       checkCudaError();
       double t2 = MPI_Wtime();
@@ -685,9 +716,10 @@ namespace quda {
       cudaFree(arg_dev);
     }
     else{
-      cudaColorSpinorField **frwProp = NULL;
+      ColorSpinorField **frwProp = NULL;
       if(qcs->cntrType == what_qpdf_g_F_B)    frwProp = qcs->cudaPropFrw_bsh;
       else if(qcs->cntrType == what_bb_g_F_B) frwProp = qcs->bb_frwprop_stk[qcs->bb_cur_depth];
+      LOC_CUDA(*frwProp[0]);
 
       QluaContractArg arg(frwProp, qcs->cudaPropBkw, NULL, qcs->cntrType, qcs->paramAPI.preserveBasis, qcs->nVec); 
       QluaContractArg *arg_dev;
@@ -707,7 +739,7 @@ namespace quda {
       }
 
       double t1 = MPI_Wtime();
-      qbarq_gPaP.apply(0);
+      qbarq_gPaP.apply(device::get_default_stream());
       cudaDeviceSynchronize();
       checkCudaError();
       double t2 = MPI_Wtime();

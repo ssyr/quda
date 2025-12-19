@@ -7,6 +7,7 @@
 
 #include <qlua_contract.h>
 #include <tune_quda.h>
+#include <device.h>
 
 namespace quda {
   
@@ -136,7 +137,7 @@ namespace quda {
   
 
   //-- Class definition
-  class ContractQQ : public TunableVectorY {
+  class ContractQQ : public Tunable {
 
   protected:
     ContractQQArg &arg;
@@ -154,24 +155,26 @@ namespace quda {
     unsigned int minThreads() const { return arg.volumeCB; }
     
   public:
-  ContractQQ(ContractQQArg &arg, ContractQQArg *arg_dev, const ColorSpinorField &meta) : TunableVectorY(arg.nParity), arg(arg), arg_dev(arg_dev), meta(meta)
+  ContractQQ(ContractQQArg &arg, ContractQQArg *arg_dev, const ColorSpinorField &meta) 
+  : arg(arg), arg_dev(arg_dev), meta(meta)
     {
-      strcpy(aux, meta.AuxString());
-      strcat(aux, comm_dim_partitioned_string());
+      strncpy((char*)aux, meta.AuxString().c_str(), sizeof(aux));
+      strncat((char*)aux, comm_dim_partitioned_string(), sizeof(aux));
     }
     virtual ~ContractQQ() { }
 
-    void apply(const cudaStream_t &stream) {
+    virtual void apply(const qudaStream_t &) override 
+    {
       if (meta.Location() == QUDA_CPU_FIELD_LOCATION) {
 	ContractQQ_CPU(arg);
       } else {
         TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
 
-	ContractQQ_GPU <<<tp.grid,tp.block,tp.shared_bytes,stream>>> (arg_dev);
+	ContractQQ_GPU <<<tp.grid, tp.block, tp.shared_bytes>>> (arg_dev);
       }
     }
 
-    TuneKey tuneKey() const { return TuneKey(meta.VolString(), typeid(*this).name(), aux); }
+    TuneKey tuneKey() const { return TuneKey(meta.VolString().c_str(), typeid(*this).name(), aux); }
   }; //-- Class definition
 
 
@@ -188,7 +191,7 @@ namespace quda {
     cudaMemcpy(arg_dev, &arg, sizeof(ContractQQArg), cudaMemcpyHostToDevice);
     
     ContractQQ contract(arg, arg_dev, *propIn1[0]);
-    contract.apply(0);
+    contract.apply(device::get_default_stream());
 
     cudaDeviceSynchronize();
     checkCudaError();

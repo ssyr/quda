@@ -999,6 +999,7 @@ namespace quda
     @param pc_type Whether the field order uses 4d or 5d even-odd preconditioning.
   */
   void copyFieldOffset(ColorSpinorField &out, const ColorSpinorField &in, CommKey offset, QudaPCType pc_type);
+  void wuppertalStep(ColorSpinorField &out, const ColorSpinorField &in, int parity, const GaugeField& U, const double*aW, const double bW);
 
 //<<<<<<< HEAD
 //(removed in 2025 merge)

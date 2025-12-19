@@ -32,8 +32,8 @@ namespace quda {
 	for(int id=0;id<arg->momDim;id++)
 	  phase += momMatrix[id + arg->momDim*im]*gcoord[id] / (QUDA_REAL)arg->totalL[id];
 	
-	phaseMatrix[tid + arg->V3*im].x =   cos(2.0*PI*phase);
-	phaseMatrix[tid + arg->V3*im].y = f*sin(2.0*PI*phase);
+	phaseMatrix[tid + arg->V3*im].x =   cos(2.0*M_PI*phase);
+	phaseMatrix[tid + arg->V3*im].y = f*sin(2.0*M_PI*phase);
       }
 
     }//-- tid check

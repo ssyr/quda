@@ -7,6 +7,28 @@
 
 #include <interface_qlua.h>
 #include <complex_quda.h>
+//
+// FIXME remove: legacy
+#define checkCudaErrorNoSync() do { \
+    cudaError_t error = cudaGetLastError(); \
+    if (error != cudaSuccess) errorQuda("(CUDA) %s", cudaGetErrorString(error));   \
+} while (0)
+
+// FIXME remove: legacy
+#ifdef HOST_DEBUG
+#  define checkCudaError() do {  \
+  cudaDeviceSynchronize();     \
+  checkCudaErrorNoSync();      \
+} while (0) 
+#else
+#  define checkCudaError() checkCudaErrorNoSync()
+#endif
+
+#define LOC_CPU(f) (assert(QUDA_CPU_FIELD_LOCATION == (f).Location()))
+#define LOC_CUDA(f) (assert(QUDA_CUDA_FIELD_LOCATION == (f).Location()))
+
+#define QUDA_NDIM   4
+quda::lat_dim_t mk_latdim(const int *x, int dim);
 
 namespace quda {
 
@@ -101,7 +123,7 @@ namespace quda {
     int sp_locvol;                // spatial volume
     bool init;
 
-    QluaUtilArg(cudaColorSpinorField **propIn, int nFldDst, int nFldSrc, int t_axis, size_t rec_size)
+    QluaUtilArg(ColorSpinorField **propIn, int nFldDst, int nFldSrc, int t_axis, size_t rec_size)
       : nParity(propIn[0]->SiteSubset()), volumeCB(propIn[0]->VolumeCB()),
 	lL{propIn[0]->X(0), propIn[0]->X(1), propIn[0]->X(2), propIn[0]->X(3)},
         t_axis(t_axis), rec_size(rec_size), nFldDst(nFldDst), nFldSrc(nFldSrc),
@@ -161,7 +183,7 @@ namespace quda {
     int bb_cur_depth;                                                             /* <- 1 at start, */
     /* [depth] arrays */
     char bb_lpath_stk[QCSTATE_BB_MAX_DEPTH+1][QCSTATE_BB_MAX_LPATH+1];            /* [0] <- "" */
-    cudaColorSpinorField *bb_frwprop_stk[QCSTATE_BB_MAX_DEPTH+1][QUDA_MAX_NVEC];  /* [0] <- cpuPropFrw */
+    ColorSpinorField *bb_frwprop_stk[QCSTATE_BB_MAX_DEPTH+1][QUDA_MAX_NVEC];  /* [0] <- cpuPropFrw */
 
     //- Correlator and momentum-projection related buffers
     complex<QUDA_REAL> *phaseMatrix_dev;  //-- Device Phase Matrix buffer
@@ -177,10 +199,10 @@ namespace quda {
     //- cudaPropFrw_bsh: Device forward (shifted) propagator
     //- cudaPropBkw: Device backward propagator
     //- cudaPropAux: Device vector used for shifts, will be getting swapped with cudaPropFrw_bsh
-    cpuColorSpinorField *cpuPropFrw[QUDA_MAX_NVEC];
-    cudaColorSpinorField *cudaPropFrw_bsh[QUDA_MAX_NVEC];
-    cudaColorSpinorField *cudaPropBkw[QUDA_MAX_NVEC];
-    cudaColorSpinorField *cudaPropAux;
+    ColorSpinorField *cpuPropFrw[QUDA_MAX_NVEC];
+    ColorSpinorField *cudaPropFrw_bsh[QUDA_MAX_NVEC];
+    ColorSpinorField *cudaPropBkw[QUDA_MAX_NVEC];
+    ColorSpinorField *cudaPropAux;
 
     /* device gauge fields
      * gf_u:    Original gauge field, extended version
@@ -189,10 +211,10 @@ namespace quda {
      * wlinks:  Extended Gauge field used as 'ColorMatrices' to store shifted links in the b and vbv directions.
      * The indices i_wl_b, i_wl_vbv, i_wl_tmp control which 'Lorentz' index of wlinks will be used for the shifts
      */
-    cudaGaugeField *gf_u;
-    cudaGaugeField *bsh_u;
-    cudaGaugeField *aux_u;    /* for shifts of bsh_u */
-    cudaGaugeField *wlinks;   /* store w_b, w_vbv */
+    GaugeField *gf_u;
+    GaugeField *bsh_u;
+    GaugeField *aux_u;    /* for shifts of bsh_u */
+    GaugeField *wlinks;   /* store w_b, w_vbv */
     int i_wl_b, i_wl_vbv, i_wl_tmp;
 
     int qcR[4]; //- Length of extended halos
@@ -212,26 +234,26 @@ namespace quda {
   qcTMD_ShiftFlag qcParseShiftFlag(char flagStr);
 
 
-  void qcCPUtoCudaVec(cudaColorSpinorField *cudaVec, cpuColorSpinorField *cpuVec);
-  void qcCPUtoCudaProp(cudaColorSpinorField **cudaProp, cpuColorSpinorField **cpuProp, int Nvec);
-  void qcSetGaugeToUnity(cudaGaugeField *U, int mu, const int *R);
-  void qcCopyExtendedGaugeField(cudaGaugeField *dst, cudaGaugeField *src, const int *R);
-  void qcCopyCudaLink(cudaGaugeField *dst, int i_dst, cudaGaugeField *src, int i_src, const int *R);
+  void qcCPUtoCudaVec(ColorSpinorField *cudaVec, ColorSpinorField *cpuVec);
+  void qcCPUtoCudaProp(ColorSpinorField **cudaProp, ColorSpinorField **cpuProp, int Nvec);
+  void qcSetGaugeToUnity(GaugeField *U, int mu, const int *R);
+  void qcCopyExtendedGaugeField(GaugeField *dst, GaugeField *src, const int *R);
+  void qcCopyCudaLink(GaugeField *dst, int i_dst, GaugeField *src, int i_src, const int *R);
 
-  void qcSwapCudaVec(cudaColorSpinorField **x1, cudaColorSpinorField **x2);
-  void qcSwapCudaGauge(cudaGaugeField **x1, cudaGaugeField **x2);
+  void qcSwapCudaVec(ColorSpinorField **x1, ColorSpinorField **x2);
+  void qcSwapCudaGauge(GaugeField **x1, GaugeField **x2);
 
 
   void perform_ShiftCudaVec_nonCov(ColorSpinorField *dst, ColorSpinorField *src,
 				   qcTMD_ShiftFlag shfFlag);
-  void perform_ShiftCudaVec_Cov(ColorSpinorField *dst, ColorSpinorField *src, cudaGaugeField *gf,
+  void perform_ShiftCudaVec_Cov(ColorSpinorField *dst, ColorSpinorField *src, GaugeField *gf,
                                 qcTMD_ShiftFlag shfFlag);
-  void perform_ShiftLink_Cov(cudaGaugeField *dst, int i_dst, cudaGaugeField *src, int i_src,
-                             cudaGaugeField *gf, qcTMD_ShiftFlag shfFlag);
-  void perform_ShiftGauge_nonCov(cudaGaugeField *dst, cudaGaugeField *src,
+  void perform_ShiftLink_Cov(GaugeField *dst, int i_dst, GaugeField *src, int i_src,
+                             GaugeField *gf, qcTMD_ShiftFlag shfFlag);
+  void perform_ShiftGauge_nonCov(GaugeField *dst, GaugeField *src,
                                  qcTMD_ShiftFlag shfFlag);
-  void perform_ShiftLink_AdjSplitCov(cudaGaugeField *dst, int i_dst, cudaGaugeField *src, int i_src,
-                                     cudaGaugeField *gf, cudaGaugeField *gf2,
+  void perform_ShiftLink_AdjSplitCov(GaugeField *dst, int i_dst, GaugeField *src, int i_src,
+                                     GaugeField *gf, GaugeField *gf2,
                                      qcTMD_ShiftFlag shfFlag, bool flipShfSgn);
 
   void qcCopyGammaToConstMem();
@@ -247,9 +269,9 @@ namespace quda {
                              cntrParam param);
 
   void QuarkContract_uLocal(complex<QUDA_REAL> *corrQuda_dev,
-                            cudaColorSpinorField **cudaProp1,
-                            cudaColorSpinorField **cudaProp2,
-                            cudaColorSpinorField **cudaProp3,
+                            ColorSpinorField **cudaProp1,
+                            ColorSpinorField **cudaProp2,
+                            ColorSpinorField **cudaProp3,
                             complex<QUDA_REAL> *S2, complex<QUDA_REAL> *S1,
                             qudaAPI_Param paramAPI);
 

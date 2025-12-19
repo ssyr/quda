@@ -102,8 +102,9 @@ QIO_Writer *open_test_output(const char *filename, int volfmt, int serpar, int i
   QIO_string_set(oflag.ildgLFN,"monkey");
   oflag.mode = QIO_TRUNC;
 
-  filesys.my_io_node = 0;
-  filesys.master_io_node = 0;
+  filesys.my_io_node_ext = NULL;
+  filesys.master_io_node_ext = NULL;
+  filesys.arg = NULL;
 
   /* Create the file XML */
   QIO_String *xml_file_out = QIO_string_create();

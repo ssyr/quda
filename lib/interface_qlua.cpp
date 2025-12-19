@@ -20,6 +20,7 @@
 
 using namespace quda;
 
+
 //- Global variables
 const char *qcContractTypeStr[QUDA_NTYPE_CONTRACT] = {
   "none",
@@ -39,6 +40,14 @@ const char *qcContractTypeStr[QUDA_NTYPE_CONTRACT] = {
 };
 //---------------------------------------------------------------------------
 
+quda::lat_dim_t 
+mk_latdim(const int *x, int dim) 
+{
+    lat_dim_t   res;
+    for (int d = 0 ; d < dim ; d++)
+        res[d] = x[d];
+    return res;
+}
 
 void
 printCPUMemInfo(){
@@ -157,10 +166,14 @@ check_quda_comms(const qudaLattice *qS)
 
 //-- fill out QudaInvertParam
 static void
-init_QudaInvertParam_generic(QudaInvertParam& ip,
-                             const QudaGaugeParam& gp, qudaAPI_Param paramAPI, bool preserveBasis=false, bool qdp2quda = true)
+init_QudaInvertParam_generic(
+        QudaInvertParam& ip, 
+        const QudaGaugeParam& gp,       /* FIXME remove unused */
+        qudaAPI_Param paramAPI, 
+        bool preserveBasis=false, 
+        bool qdp2quda = true)
 {
-
+  QudaGaugeParam gp1 ; gp1 = gp;        /* shut up warnings */
   printfQuda("init_QudaInvertParam_generic: %s preserve the Gamma basis!\n", preserveBasis ? "Will" : "Will NOT");
   if(!qdp2quda)
     warningQuda("init_QudaInvertParam_generic: Got qdp2quda = FALSE. Correctness of results not guaranteed!\n");
@@ -185,9 +198,6 @@ init_QudaInvertParam_generic(QudaInvertParam& ip,
   ip.reliable_delta           = 0.1;
   ip.solution_type            = QUDA_MAT_SOLUTION;
   ip.solve_type               = QUDA_DIRECT_PC_SOLVE;
-  ip.sp_pad                   = gp.ga_pad;
-  ip.cl_pad                   = gp.ga_pad;
-  ip.tune                     = QUDA_TUNE_NO;
   ip.use_init_guess           = QUDA_USE_INIT_GUESS_NO;
   ip.verbosity                = paramAPI.verbosity;
 
@@ -228,12 +238,12 @@ init_QudaGaugeParam_generic(QudaGaugeParam& gp, const qudaLattice *qS, const int
 
 
 //-- load the gauge field
-static cudaGaugeField*
+static GaugeField*
 new_cudaGaugeField(QudaGaugeParam& gp, QUDA_REAL *hbuf_u[])
 {
 
-  GaugeFieldParam gf_param(hbuf_u, gp);
-  GaugeField *cpu_gf   = static_cast<GaugeField*>(new cpuGaugeField(gf_param));
+  GaugeFieldParam gf_param(gp, hbuf_u);
+  GaugeField *cpu_gf   = static_cast<GaugeField*>(new GaugeField(gf_param));
 
   gf_param.create         = QUDA_NULL_FIELD_CREATE;
   //  gf_param.precision      = gp.cuda_prec;
@@ -243,8 +253,8 @@ new_cudaGaugeField(QudaGaugeParam& gp, QUDA_REAL *hbuf_u[])
   gf_param.order          = QUDA_FLOAT2_GAUGE_ORDER;
   gf_param.setPrecision(QUDA_DOUBLE_PRECISION);
 
-  cudaGaugeField *cuda_gf = NULL;
-  cuda_gf = new cudaGaugeField(gf_param);
+  GaugeField *cuda_gf = NULL;
+  cuda_gf = new GaugeField(gf_param);
   if (NULL == cuda_gf) return NULL;
 
   if(NULL != hbuf_u) cuda_gf->copy(*cpu_gf); // C.K. This does ghost exchange as well
@@ -255,11 +265,12 @@ new_cudaGaugeField(QudaGaugeParam& gp, QUDA_REAL *hbuf_u[])
   return cuda_gf;
 }
 
-static cudaGaugeField*
-new_ExtendedcudaGaugeField(cudaGaugeField &in, const int *R, bool copyGauge=true, bool redundant_comms=false, QudaReconstructType recon=QUDA_RECONSTRUCT_INVALID){
+static GaugeField*
+new_ExtendedcudaGaugeField(GaugeField &in, const int *R, bool copyGauge=true, bool redundant_comms=false, QudaReconstructType recon=QUDA_RECONSTRUCT_INVALID){
   
-  int y[4];
-  for (int dir=0;dir<4;dir++) y[dir] = in.X()[dir] + 2*R[dir];
+  lat_dim_t y;
+  for (int dir=0 ; dir<4 ; dir++) 
+    y[dir]  = in.X()[dir] + 2*R[dir];
   int pad = 0;
   
   GaugeFieldParam gParamEx(y, in.Precision(), recon != QUDA_RECONSTRUCT_INVALID ? recon : in.Reconstruct(), pad,
@@ -272,77 +283,66 @@ new_ExtendedcudaGaugeField(cudaGaugeField &in, const int *R, bool copyGauge=true
   gParamEx.tadpole = in.Tadpole();
   for (int d=0; d<4; d++) gParamEx.r[d] = R[d];
   
-  cudaGaugeField *out = new cudaGaugeField(gParamEx);
+  GaugeField *out = new GaugeField(gParamEx);
 
   if(copyGauge){
     copyExtendedGauge(*out, in, QUDA_CUDA_FIELD_LOCATION);
-    out->exchangeExtendedGhost(R, redundant_comms);
+    out->exchangeExtendedGhost(mk_latdim(R, QUDA_NDIM), redundant_comms);
   }
 
   return out;
 }
 
 //-- load a cpu ColorSpinorField
-static cpuColorSpinorField*
+static ColorSpinorField*
 new_cpuColorSpinorField(QudaGaugeParam& gp, QudaInvertParam& ip,
-			int nColor, int nSpin,
-			QUDA_REAL *hbuf_x)
+                        int nColor, int nSpin,      /* FIXME remove unused */
+                        QUDA_REAL *hbuf_x)
 {
-  ColorSpinorParam cpuParam(hbuf_x, ip, gp.X, false, QUDA_CPU_FIELD_LOCATION); // false stands for the pc_solution
-
-  cpuColorSpinorField *cpu_x = NULL;
-  if (NULL == hbuf_x)
-    cpuParam.create = QUDA_ZERO_FIELD_CREATE;
-  
-  cpu_x = new cpuColorSpinorField(cpuParam);
-
-  return cpu_x;
+  nColor = nColor ; nSpin = nSpin;                  /* shut up warnings */
+  ColorSpinorParam cpuParam(hbuf_x, ip, mk_latdim(gp.X, QUDA_NDIM), /*pc_solution=*/false, QUDA_CPU_FIELD_LOCATION);
+  cpuParam.create = (NULL == hbuf_x) ? QUDA_ZERO_FIELD_CREATE : QUDA_REFERENCE_FIELD_CREATE;
+  return new ColorSpinorField(cpuParam);
 }
 
 //-- load a cuda ColorSpinorField
-static cudaColorSpinorField*
+static ColorSpinorField*
 new_cudaColorSpinorField(QudaGaugeParam& gp, QudaInvertParam& ip,
-			 int nColor, int nSpin,
-			 QUDA_REAL *hbuf_x)
+                         int nColor, int nSpin,     /* FIXME remove unused */
+                         QUDA_REAL *hbuf_x)
 {
-  ColorSpinorParam cpuParam(hbuf_x, ip, gp.X, false, QUDA_CPU_FIELD_LOCATION); // false stands for the pc_solution
+  nColor = nColor ; nSpin = nSpin;                  /* shut up warnings */
+  ColorSpinorParam cpuParam(hbuf_x, ip, mk_latdim(gp.X, QUDA_NDIM), /*pc_solution=*/false, QUDA_CPU_FIELD_LOCATION);
   ColorSpinorParam cudaParam(cpuParam, ip, QUDA_CUDA_FIELD_LOCATION);
-
-  cudaColorSpinorField *cuda_x = NULL;
+  cudaParam.create = (NULL == hbuf_x) ? QUDA_ZERO_FIELD_CREATE : QUDA_NULL_FIELD_CREATE;
+  ColorSpinorField *cuda_x = new ColorSpinorField(cudaParam);
   if (NULL != hbuf_x) {
-    cudaParam.create = QUDA_COPY_FIELD_CREATE;
-    ColorSpinorField *cpu_x = ColorSpinorField::Create(cpuParam);
-    cuda_x = new cudaColorSpinorField(*cpu_x, cudaParam);
+    ColorSpinorField *cpu_x = new ColorSpinorField(cpuParam);
+    *cuda_x = *cpu_x;
     delete cpu_x;
-    cpu_x = NULL;
   }
-  else{
-    cudaParam.create = QUDA_ZERO_FIELD_CREATE;
-    cuda_x = new cudaColorSpinorField(cudaParam);
-  }
-
   return cuda_x;
 }
 
 //-- get back the resulting color spinor field
 static void
 save_cudaColorSpinorField(QUDA_REAL *hbuf_x,
-			  QudaGaugeParam& gp, QudaInvertParam& ip,
-			  int nColor, int nSpin,
-			  ColorSpinorField &cuda_x)
+                          QudaGaugeParam& gp, QudaInvertParam& ip,
+                          int nColor, int nSpin,
+                          ColorSpinorField &cuda_x)
 {
-  ColorSpinorParam cpuParam(hbuf_x, ip, gp.X, false); // false stands for the pc_solution
-  cpuParam.nColor = nColor;  //
-  cpuParam.nSpin  = nSpin;   // hack!
-  cpuColorSpinorField cpu_x(cpuParam);                // cpuCSF wrapper for hbuf_x
+  ColorSpinorParam cpuParam(hbuf_x, ip, mk_latdim(gp.X, QUDA_NDIM), /*pc_solution=*/false, QUDA_CPU_FIELD_LOCATION);
+  cpuParam.nColor = nColor;
+  cpuParam.nSpin  = nSpin;
+  ColorSpinorField cpu_x(cpuParam);                // cpuCSF wrapper for hbuf_x
   cpu_x = cuda_x;
 }
 
 
 static void createPhaseMatrix_CPU(complex<QUDA_REAL> *phaseMatrix,
-				  const int *momMatrix,
-				  cntrParam param,
-				  int localL[], int totalL[])
+                                  const int *momMatrix,
+                                  cntrParam param,
+                                  int localL[], int totalL[])
 {
   
   int lcoord[param.momDim];
@@ -361,7 +361,7 @@ static void createPhaseMatrix_CPU(complex<QUDA_REAL> *phaseMatrix,
     for(int im=0;im<param.Nmoms;im++){
       QUDA_REAL phase = 0.0;
       for(int id=0;id<param.momDim;id++)
-	phase += momMatrix[id + param.momDim*im]*gcoord[id] / (QUDA_REAL)totalL[id];
+        phase += momMatrix[id + param.momDim*im]*gcoord[id] / (QUDA_REAL)totalL[id];
 
       phaseMatrix[iv + param.V3*im].x =   cos(2.0*PI*phase);
       phaseMatrix[iv + param.V3*im].y = f*sin(2.0*PI*phase);
@@ -374,12 +374,12 @@ static void createPhaseMatrix_CPU(complex<QUDA_REAL> *phaseMatrix,
 //-- top level function, calls quda-wuppertal smearing
 EXTRN_C int
 laplacianQuda(
-	      QUDA_REAL *hv_out,
-	      QUDA_REAL *hv_in,
-	      QUDA_REAL *h_gauge[],
-	      const qudaLattice *qS,
-	      int nColor, int nSpin,
-	      qudaAPI_Param paramAPI)
+              QUDA_REAL *hv_out,
+              QUDA_REAL *hv_in,
+              QUDA_REAL *h_gauge[],
+              const qudaLattice *qS,
+              int nColor, int nSpin,
+              qudaAPI_Param paramAPI)
 {
   int status = 0;
 
@@ -414,8 +414,8 @@ laplacianQuda(
 
   //-- load the colorspinor fields
   double t5 = MPI_Wtime();
-  cudaColorSpinorField *cuda_v_in  = NULL;
-  cudaColorSpinorField *cuda_v_out = NULL;
+  ColorSpinorField *cuda_v_in  = NULL;
+  ColorSpinorField *cuda_v_out = NULL;
   cuda_v_in  = new_cudaColorSpinorField(gp, ip, nColor, nSpin, hv_in);
   cuda_v_out = new_cudaColorSpinorField(gp, ip, nColor, nSpin, NULL);
   double t6 = MPI_Wtime();
@@ -456,12 +456,12 @@ laplacianQuda(
 //-- top level function, performs di-quark contractions
 EXTRN_C int
 doQQ_contract_Quda(
-	      QUDA_REAL *hprop_out,
-	      QUDA_REAL *hprop_in1,
-	      QUDA_REAL *hprop_in2,
-	      const qudaLattice *qS,
-	      int nColor, int nSpin,
-	      qudaAPI_Param paramAPI)
+              QUDA_REAL *hprop_out,
+              QUDA_REAL *hprop_in1,
+              QUDA_REAL *hprop_in2,
+              const qudaLattice *qS,
+              int nColor, int nSpin,
+              qudaAPI_Param paramAPI)
 {
   int status = 0;
 
@@ -546,13 +546,14 @@ doQQ_contract_Quda(
 //-- Here, wParam holds inverter parameters
 EXTRN_C int
 Qlua_invertQuda(
-		QUDA_REAL *hv_out,
-		QUDA_REAL *hv_in,
-		QUDA_REAL *h_gauge[],
-		const qudaLattice *qS,
-		int nColor, int nSpin,
-		qudaAPI_Param paramAPI)
+                QUDA_REAL *hv_out,
+                QUDA_REAL *hv_in,
+                QUDA_REAL *h_gauge[],
+                const qudaLattice *qS,
+                int nColor, int nSpin,                  /* FIXME remove unused */
+                qudaAPI_Param paramAPI)
 {
+  nColor = nColor ; nSpin = nSpin;                      /* shut up warnings */
   int status = 0;
 
   if (check_quda_comms(qS))
@@ -605,10 +606,10 @@ Qlua_invertQuda(
 
 //-- top level function, performs momentum projection
 int momProjCorr_uLocal(XTRN_CPLX *corrOut, const complex<QUDA_REAL> *corrQuda_dev,
-		       QluaUtilArg utilArg,
-		       const qudaLattice *qS,
-		       const int *momlist,
-		       qudaAPI_Param paramAPI){
+                       QluaUtilArg utilArg,
+                       const qudaLattice *qS,
+                       const int *momlist,
+                       qudaAPI_Param paramAPI){
   int status = 0;
   
   //-- Check-print parameters
@@ -753,16 +754,16 @@ int momProjCorr_uLocal(XTRN_CPLX *corrOut, const complex<QUDA_REAL> *corrQuda_de
   if(typeid(QUDA_REAL) == typeid(double)){
     printfQuda("%s: Performing momentum projection in double precision.\n", __func__);
     stat = cublasZgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, Nmoms, Ndata*Lt, V3,
-		       &al, phaseMatrix_dev, V3,
-		       corrInp_dev , V3, &be,
-		       corrOut_dev, Nmoms);
+                       &al, phaseMatrix_dev, V3,
+                       corrInp_dev , V3, &be,
+                       corrOut_dev, Nmoms);
   }
   else if(typeid(QUDA_REAL) == typeid(float)){
     printfQuda("%s: Performing momentum projection in single precision.\n", __func__);
     stat = cublasCgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, Nmoms, Ndata*Lt, V3,
-		       (cuComplex*)&al, (cuComplex*)phaseMatrix_dev, V3,
-		       (cuComplex*)corrInp_dev , V3, (cuComplex*)&be,
-		       (cuComplex*)corrOut_dev, Nmoms);
+                       (cuComplex*)&al, (cuComplex*)phaseMatrix_dev, V3,
+                       (cuComplex*)corrInp_dev , V3, (cuComplex*)&be,
+                       (cuComplex*)corrOut_dev, Nmoms);
   }
   else errorQuda("%s: Precision not supported!\n", __func__);
   
@@ -828,8 +829,8 @@ int momProjCorr_uLocal(XTRN_CPLX *corrOut, const complex<QUDA_REAL> *corrQuda_de
 
   
   MPI_Gather(corrOut_glob, Nmoms*Ndata*Lt, dataTypeMPI,
-	     corrOut_proj, Nmoms*Ndata*Lt, dataTypeMPI,
-	     0, COMM_TIME);
+             corrOut_proj, Nmoms*Ndata*Lt, dataTypeMPI,
+             0, COMM_TIME);
   
   MPI_Bcast(corrOut_proj, Nmoms*Ndata*totT, dataTypeMPI, 0, MPI_COMM_WORLD);
   
@@ -843,11 +844,11 @@ int momProjCorr_uLocal(XTRN_CPLX *corrOut, const complex<QUDA_REAL> *corrQuda_de
     int itShf = (it + csrc[3]) % totT;
     complex<QUDA_REAL> bc_fct = ((it + csrc[3]) >= totT) ? complex<QUDA_REAL>{bc_t,0} : complex<QUDA_REAL>{1,0};
     for(int id=0;id<Ndata;id++){
-      for(int im=0;im<Nmoms;im++){	
-	int idx_from = im + Nmoms*id + Nmoms*Ndata*itShf;  //- This is how the indices of the Mom-projected buffer come out from cuBlas
-	int idx_to   = it + totT*im  + totT*Nmoms*id;      //- This is how the indices of the Mom-projected buffer should be
+      for(int im=0;im<Nmoms;im++){      
+        int idx_from = im + Nmoms*id + Nmoms*Ndata*itShf;  //- This is how the indices of the Mom-projected buffer come out from cuBlas
+        int idx_to   = it + totT*im  + totT*Nmoms*id;      //- This is how the indices of the Mom-projected buffer should be
 
-	corrOut[idx_to] = bc_fct * corrOut_proj[idx_from];
+        corrOut[idx_to] = bc_fct * corrOut_proj[idx_from];
       }
     }
   }
@@ -878,11 +879,21 @@ int momProjCorr_uLocal(XTRN_CPLX *corrOut, const complex<QUDA_REAL> *corrQuda_de
 
 //-- This function supports only Standard (ultra-local) contractions
 EXTRN_C int
-QuarkContract_momProj_Quda(XTRN_CPLX *momproj_buf, XTRN_CPLX *corrQuda, const qudaLattice *qS, const int *momlist,
-			   QUDA_REAL *hprop1, QUDA_REAL *hprop2, QUDA_REAL *hprop3, QUDA_REAL *h_gauge[],
-			   XTRN_CPLX *S2, XTRN_CPLX *S1,
-			   int Nc, int Ns, qudaAPI_Param paramAPI){
+QuarkContract_momProj_Quda(
+        XTRN_CPLX *momproj_buf, 
+        XTRN_CPLX *corrQuda, 
+        const qudaLattice *qS, 
+        const int *momlist,
+        QUDA_REAL *hprop1, 
+        QUDA_REAL *hprop2, 
+        QUDA_REAL *hprop3, 
+        QUDA_REAL *h_gauge[],                           /* FIXME remove unused */
+        XTRN_CPLX *S2, 
+        XTRN_CPLX *S1,
+        int Nc, int Ns, 
+        qudaAPI_Param paramAPI){
   
+  h_gauge = h_gauge ;                                   /* shut up warnings */
   int status = 0;
   
   if (check_quda_comms(qS))
@@ -894,8 +905,8 @@ QuarkContract_momProj_Quda(XTRN_CPLX *momproj_buf, XTRN_CPLX *corrQuda, const qu
   if(paramAPI.mpParam.cntrType == what_none)
     errorQuda("%s: Contraction type not parsed correctly or not supported!\n", __func__);
   else if((paramAPI.mpParam.cntrType == what_tmd_g_F_B)  ||
-	  (paramAPI.mpParam.cntrType == what_qpdf_g_F_B) ||
-	  (paramAPI.mpParam.cntrType == what_bb_g_F_B))
+          (paramAPI.mpParam.cntrType == what_qpdf_g_F_B) ||
+          (paramAPI.mpParam.cntrType == what_bb_g_F_B))
     errorQuda("%s: This function does not support the qPDF, BB and TMD contractions!\n", __func__);
   else
     printfQuda("%s: Got Contraction type %s\n", __func__, qcContractTypeStr[paramAPI.mpParam.cntrType]);
@@ -923,9 +934,9 @@ QuarkContract_momProj_Quda(XTRN_CPLX *momproj_buf, XTRN_CPLX *corrQuda, const qu
   printfQuda("%s: Got nVec = %d\n", __func__, nVec);
   LONG_T fieldLgh = paramAPI.mpParam.locvol * Nc * Ns * 2;
 
-  cudaColorSpinorField *cudaProp1[nVec];
-  cudaColorSpinorField *cudaProp2[nVec];
-  cudaColorSpinorField *cudaProp3[nVec];
+  ColorSpinorField *cudaProp1[nVec];
+  ColorSpinorField *cudaProp2[nVec];
+  ColorSpinorField *cudaProp3[nVec];
   
   double t1 = MPI_Wtime();
   for(int ivec=0;ivec<nVec;ivec++){
@@ -967,8 +978,8 @@ QuarkContract_momProj_Quda(XTRN_CPLX *momproj_buf, XTRN_CPLX *corrQuda, const qu
   cudaMemset(corrQuda_dev, 0, corrSize);
   double t5 = MPI_Wtime();
   QuarkContract_uLocal(corrQuda_dev, cudaProp1, cudaProp2, cudaProp3,
-		       (complex<QUDA_REAL>*)S2, (complex<QUDA_REAL>*)S1,
-		       paramAPI);
+                       (complex<QUDA_REAL>*)S2, (complex<QUDA_REAL>*)S1,
+                       paramAPI);
   double t6 = MPI_Wtime();
   printfQuda("TIMING - %s: Function QuarkContract_uLocal completed in %f sec.\n", __func__, t6-t5);
   /* --------------------------------------------------------------------------------------- */
@@ -1054,16 +1065,16 @@ int momProjCorr_TMD_QPDF(QuarkContractState *qcs, XTRN_CPLX *corrOut){
   if(typeid(QUDA_REAL) == typeid(double)){
     if(getVerbosity() >= QUDA_VERBOSE) printfQuda("%s: Performing momentum projection in double precision.\n", __func__);
     stat = cublasZgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, Nmoms, Ndata*locT, V3,
-		       &al, qcs->phaseMatrix_dev, V3,
-		       qcs->corrInp_dev , V3, &be,
-		       qcs->corrOut_dev, Nmoms);
+                       &al, qcs->phaseMatrix_dev, V3,
+                       qcs->corrInp_dev , V3, &be,
+                       qcs->corrOut_dev, Nmoms);
   }
   else if(typeid(QUDA_REAL) == typeid(float)){
     if(getVerbosity() >= QUDA_VERBOSE) printfQuda("%s: Performing momentum projection in single precision.\n", __func__);
     stat = cublasCgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, Nmoms, Ndata*locT, V3,
-		       (cuComplex*)&al, (cuComplex*)qcs->phaseMatrix_dev, V3,
-		       (cuComplex*)qcs->corrInp_dev , V3, (cuComplex*)&be,
-		       (cuComplex*)qcs->corrOut_dev, Nmoms);
+                       (cuComplex*)&al, (cuComplex*)qcs->phaseMatrix_dev, V3,
+                       (cuComplex*)qcs->corrInp_dev , V3, (cuComplex*)&be,
+                       (cuComplex*)qcs->corrOut_dev, Nmoms);
   }
   else errorQuda("%s: Precision not supported!\n", __func__);
   
@@ -1127,8 +1138,8 @@ int momProjCorr_TMD_QPDF(QuarkContractState *qcs, XTRN_CPLX *corrOut){
   MPI_Reduce(qcs->corrOut_host, qcs->corrOut_glob, Nmoms*Ndata*locT, dataTypeMPI, MPI_SUM, 0, COMM_SPACE);  
   
   MPI_Gather(qcs->corrOut_glob, Nmoms*Ndata*locT, dataTypeMPI,
-	     qcs->corrOut_proj, Nmoms*Ndata*locT, dataTypeMPI,
-	     0, COMM_TIME);
+             qcs->corrOut_proj, Nmoms*Ndata*locT, dataTypeMPI,
+             0, COMM_TIME);
   
   MPI_Bcast(qcs->corrOut_proj, Nmoms*Ndata*totT, dataTypeMPI, 0, MPI_COMM_WORLD);
 
@@ -1142,11 +1153,11 @@ int momProjCorr_TMD_QPDF(QuarkContractState *qcs, XTRN_CPLX *corrOut){
     int itShf = (it + tsrc) % totT;
     complex<QUDA_REAL> bc_fct = ((it + tsrc) >= totT) ? complex<QUDA_REAL>{bc_t,0} : complex<QUDA_REAL>{1,0};
     for(int id=0;id<Ndata;id++){
-      for(int im=0;im<Nmoms;im++){	
-	int idx_from = im + Nmoms*id + Nmoms*Ndata*itShf;  //- This is how the indices of the Mom-projected buffer come out from cuBlas
-	int idx_to   = it + totT*im  + totT*Nmoms*id;      //- This is how the indices of the Mom-projected buffer should be
+      for(int im=0;im<Nmoms;im++){      
+        int idx_from = im + Nmoms*id + Nmoms*Ndata*itShf;  //- This is how the indices of the Mom-projected buffer come out from cuBlas
+        int idx_to   = it + totT*im  + totT*Nmoms*id;      //- This is how the indices of the Mom-projected buffer should be
 
-	corrOut[idx_to] = bc_fct * qcs->corrOut_proj[idx_from];
+        corrOut[idx_to] = bc_fct * qcs->corrOut_proj[idx_from];
       }
     }
   }
@@ -1171,10 +1182,10 @@ int momProjCorr_TMD_QPDF(QuarkContractState *qcs, XTRN_CPLX *corrOut){
 //- C.K. Initialize the TMD contract State
 EXTRN_C int
 TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
-			const int *momlist,
-			void *qluaPropFrw_host, void *qluaPropBkw_host,
-			void *qluaGauge_host[],
-			qudaAPI_Param paramAPI){
+                        const int *momlist,
+                        void *qluaPropFrw_host, void *qluaPropBkw_host,
+                        void *qluaGauge_host[],
+                        qudaAPI_Param paramAPI){
 
   double t5 = MPI_Wtime();
 
@@ -1300,7 +1311,7 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
     qcs->qcR[d] = 2 * (QCredundantComms || commDimPartitioned(d));
   }
 
-  cudaGaugeField *cuda_gf = NULL;
+  GaugeField *cuda_gf = NULL;
   qcs->gf_u    = NULL;
   qcs->bsh_u   = NULL;
   qcs->aux_u   = NULL;
@@ -1360,11 +1371,11 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
     for(int ivec=0;ivec<nVec;ivec++){      
       qcs->cpuPropFrw[ivec]  = new_cpuColorSpinorField(gp, ip, Nc, Ns, &(qudaPropFrw_host[ivec * csVecLgh]) );
       if(qcs->cpuPropFrw[ivec] == NULL)
-	errorQuda("%s: Cannot allocate cpu forward propagator for ivec = %d. Exiting.\n", __func__, ivec);
+        errorQuda("%s: Cannot allocate cpu forward propagator for ivec = %d. Exiting.\n", __func__, ivec);
 
       qcs->cudaPropFrw_bsh[ivec] = new_cudaColorSpinorField(gp, ip, Nc, Ns, &(qudaPropFrw_host[ivec * csVecLgh]) );
       if(qcs->cudaPropFrw_bsh[ivec] == NULL)
-	errorQuda("%s: Cannot allocate cuda forward propagator for ivec = %d. Exiting.\n", __func__, ivec);
+        errorQuda("%s: Cannot allocate cuda forward propagator for ivec = %d. Exiting.\n", __func__, ivec);
     }//-for ivec
   }
   else if(qcs->cntrType == what_bb_g_F_B){
@@ -1375,15 +1386,15 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
     for(int ivec=0;ivec<nVec;ivec++){
       qcs->bb_frwprop_stk[ibb][ivec] = new_cudaColorSpinorField(gp, ip, Nc, Ns, &(qudaPropFrw_host[ivec * csVecLgh]) );
       if(qcs->bb_frwprop_stk[ibb][ivec] == NULL)
-	errorQuda("%s: Cannot allocate cuda forward stack propagator for ibb,ivec = %d,%d. Exiting.\n", __func__, ibb, ivec);
+        errorQuda("%s: Cannot allocate cuda forward stack propagator for ibb,ivec = %d,%d. Exiting.\n", __func__, ibb, ivec);
     }
 
     //- Initialize all other depths of device stack forward propagator to zero, ibb MUST start at 1
     for(ibb=1;ibb<qcs->bb_max_depth+1;ibb++){
       for(int ivec=0;ivec<nVec;ivec++){
-	qcs->bb_frwprop_stk[ibb][ivec] = new_cudaColorSpinorField(gp, ip, Nc, Ns, NULL);
-	if(qcs->bb_frwprop_stk[ibb][ivec] == NULL)
-	  errorQuda("%s: Cannot allocate cuda forward stack propagator for ibb,ivec = %d,%d. Exiting.\n", __func__, ibb, ivec);
+        qcs->bb_frwprop_stk[ibb][ivec] = new_cudaColorSpinorField(gp, ip, Nc, Ns, NULL);
+        if(qcs->bb_frwprop_stk[ibb][ivec] == NULL)
+          errorQuda("%s: Cannot allocate cuda forward stack propagator for ibb,ivec = %d,%d. Exiting.\n", __func__, ibb, ivec);
       }
     }
   }
@@ -1419,11 +1430,11 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
   //-- Print Generic parameters
   printfQuda("%s - Generic Parameters:\n", __func__);
   printfQuda("  local lattice (x,y,z,t) = (%d,%d,%d,%d)\n",
-	     paramAPI.mpParam.localL[0], paramAPI.mpParam.localL[1],
-	     paramAPI.mpParam.localL[2], paramAPI.mpParam.localL[3]);
+             paramAPI.mpParam.localL[0], paramAPI.mpParam.localL[1],
+             paramAPI.mpParam.localL[2], paramAPI.mpParam.localL[3]);
   printfQuda("  global lattice (x,y,z,t) = (%d,%d,%d,%d)\n",
-	     paramAPI.mpParam.totalL[0], paramAPI.mpParam.totalL[1],
-	     paramAPI.mpParam.totalL[2], paramAPI.mpParam.totalL[3]);
+             paramAPI.mpParam.totalL[0], paramAPI.mpParam.totalL[1],
+             paramAPI.mpParam.totalL[2], paramAPI.mpParam.totalL[3]);
   printfQuda("  nVec     = %d\n", nVec);
   printfQuda("  cntrType = %s\n"  , qcContractTypeStr[qcs->cntrType]);
   printfQuda("  locvol   = %lld\n", paramAPI.mpParam.locvol);
@@ -1464,7 +1475,7 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
 
     //-- Prepare host momentum projection buffers
     qcs->corrOut_proj = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*totT, SizeCplxReal); //-- Final result (global summed, gathered) of momentum projection
-    qcs->corrOut_glob = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*locT, SizeCplxReal); //-- Globally summed momentum projection buffer		     
+    qcs->corrOut_glob = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*locT, SizeCplxReal); //-- Globally summed momentum projection buffer                
     qcs->corrOut_host = (complex<QUDA_REAL>*) calloc(Nmoms*Ndata*locT, SizeCplxReal); //-- Host (local) output of cuBlas momentum projection
     if((qcs->corrOut_proj == NULL) || (qcs->corrOut_glob == NULL) || (qcs->corrOut_host == NULL))
       errorQuda("%s: Cannot allocate Host Momentum Projection output correlation function buffers.\n", __func__);
@@ -1480,8 +1491,8 @@ TMD_QPDF_initState_Quda(void **Vqcs, const qudaLattice *qS,
     //-- Print Momentum projection parameters
     printfQuda("%s - Momentum projection Parameters:\n", __func__);
     printfQuda("  source-coords (x,y,z,t) = (%d,%d,%d,%d)\n",
-	       paramAPI.mpParam.csrc[0], paramAPI.mpParam.csrc[1],
-	       paramAPI.mpParam.csrc[2], paramAPI.mpParam.csrc[3]);
+               paramAPI.mpParam.csrc[0], paramAPI.mpParam.csrc[1],
+               paramAPI.mpParam.csrc[2], paramAPI.mpParam.csrc[3]);
     printfQuda("  Nmoms    = %d\n",   paramAPI.mpParam.Nmoms);
     printfQuda("  expSgn   = %+d\n",  paramAPI.mpParam.expSgn);
     printfQuda("  Tdim     = %d\n",   paramAPI.mpParam.Tdim);
@@ -1560,8 +1571,8 @@ TMD_QPDF_freeState_Quda(void **Vqcs){
   if(qcs->cntrType == what_bb_g_F_B){
     for(int ibb=0;ibb<qcs->bb_max_depth+1;ibb++){
       for(int ivec=0;ivec<qcs->nVec;ivec++){
-	delete qcs->bb_frwprop_stk[ibb][ivec];
-	qcs->bb_frwprop_stk[ibb][ivec] = NULL;
+        delete qcs->bb_frwprop_stk[ibb][ivec];
+        qcs->bb_frwprop_stk[ibb][ivec] = NULL;
       }
     }
   }
@@ -1611,9 +1622,9 @@ TMD_QPDF_freeState_Quda(void **Vqcs){
 //- C.K. Main function which performs propagator/gauge shifts and performs TMD contractions
 EXTRN_C int
 TMDstep_momProj_Quda(void *Vqcs,
-		     XTRN_CPLX *momproj_buf,     /* output in Pspace */
-		     XTRN_CPLX *corrQuda,        /* output in Xspace if push_res */
-		     const char *b_lpath, const char *v_lpath){
+                     XTRN_CPLX *momproj_buf,     /* output in Pspace */
+                     XTRN_CPLX *corrQuda,        /* output in Xspace if push_res */
+                     const char *b_lpath, const char *v_lpath){
 
   cudaProfilerStart();
 
@@ -1726,7 +1737,7 @@ TMDstep_momProj_Quda(void *Vqcs,
     double t7 = MPI_Wtime();
     bool flipShfSgn = true;
     perform_ShiftLink_AdjSplitCov(qcs->wlinks, qcs->i_wl_tmp, qcs->wlinks, qcs->i_wl_vbv,
-				  qcs->gf_u, qcs->bsh_u, shfFlag, flipShfSgn);
+                                  qcs->gf_u, qcs->bsh_u, shfFlag, flipShfSgn);
     int itmp = qcs->i_wl_tmp;
     qcs->i_wl_tmp = qcs->i_wl_vbv;
     qcs->i_wl_vbv = itmp;
@@ -1790,9 +1801,9 @@ TMDstep_momProj_Quda(void *Vqcs,
 //- C.K. Main function which performs propagator shifts and performs PDF contractions
 EXTRN_C int
 QPDFstep_momProj_Quda(void *Vqcs,
-		      XTRN_CPLX *momproj_buf,     /* output in Pspace */
-		      XTRN_CPLX *corrQuda,        /* output in Xspace if push_res */
-		      const char *b_lpath){
+                      XTRN_CPLX *momproj_buf,     /* output in Pspace */
+                      XTRN_CPLX *corrQuda,        /* output in Xspace if push_res */
+                      const char *b_lpath){
 
   cudaProfilerStart();
 
@@ -1896,9 +1907,9 @@ QPDFstep_momProj_Quda(void *Vqcs,
 
 EXTRN_C int
 BBstep_momProj_Quda(void *Vqcs,
-		      XTRN_CPLX *momproj_buf,     /* output in Pspace */
-		      XTRN_CPLX *corrQuda,        /* output in Xspace if push_res */
-		      const char *b_lpath) 
+                      XTRN_CPLX *momproj_buf,     /* output in Pspace */
+                      XTRN_CPLX *corrQuda,        /* output in Xspace if push_res */
+                      const char *b_lpath) 
 {
   cudaProfilerStart();
 
@@ -1948,15 +1959,15 @@ BBstep_momProj_Quda(void *Vqcs,
       //- Covariant shift of qcs->cudaPropFrw_bsh in dir 'c'
       double t1 = MPI_Wtime();
       for(int ivec = 0 ; ivec < qcs->nVec ; ivec++) {
-	if (first_c) {  /* [k0+1] <- CShift([k0]) */
-	  perform_ShiftCudaVec_Cov(qcs->bb_frwprop_stk[k0+1][ivec], 
-				   qcs->bb_frwprop_stk[k0][ivec], qcs->gf_u, shfFlag);
-	}
-	else{ /* [k0+1] <- CShift([k0+1]) */
-	  perform_ShiftCudaVec_Cov(qcs->cudaPropAux, 
-				   qcs->bb_frwprop_stk[1+k0][ivec], qcs->gf_u, shfFlag);
-	  qcSwapCudaVec(&(qcs->bb_frwprop_stk[1+k0][ivec]), &(qcs->cudaPropAux));
-	}
+        if (first_c) {  /* [k0+1] <- CShift([k0]) */
+          perform_ShiftCudaVec_Cov(qcs->bb_frwprop_stk[k0+1][ivec], 
+                                   qcs->bb_frwprop_stk[k0][ivec], qcs->gf_u, shfFlag);
+        }
+        else{ /* [k0+1] <- CShift([k0+1]) */
+          perform_ShiftCudaVec_Cov(qcs->cudaPropAux, 
+                                   qcs->bb_frwprop_stk[1+k0][ivec], qcs->gf_u, shfFlag);
+          qcSwapCudaVec(&(qcs->bb_frwprop_stk[1+k0][ivec]), &(qcs->cudaPropAux));
+        }
       }
       double t2 = MPI_Wtime();
       printfQuda("TIMING - %s: Covariant Propagator shift done in %f sec.\n", __func__, t2-t1);
@@ -2068,12 +2079,14 @@ QluaCheckMemoryStatus(long long nElem){
   return 0;
 }
 
+// FIXME REMOVE 
 //- Legacy function, just keep it here so that Qlua-build does not complain
-EXTRN_C int
-momentumProjectionPropagator_Quda(QUDA_REAL *corrOut,
-				  QUDA_REAL *corrIn,
-				  const qudaLattice *qS,
-				  qudaAPI_Param paramAPI){
-  errorQuda("Deprecated function!\n");
-  return 1;
-}
+//EXTRN_C int
+//momentumProjectionPropagator_Quda(QUDA_REAL *corrOut,
+//                                  QUDA_REAL *corrIn,
+//                                  const qudaLattice *qS,
+//                                  qudaAPI_Param paramAPI){
+//    corrOut = corrOut ; corrIn = corrIn ;       /* shut up warnings */
+//  errorQuda("Deprecated function!\n");
+//  return 1;
+//}

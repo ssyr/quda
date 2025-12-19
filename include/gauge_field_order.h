@@ -1569,7 +1569,7 @@ namespace quda {
         const AllocInt phaseOffset;
         size_t bytes;
         
-        FloatNOrder() : offset(0) { }
+        FloatNOrder() : offset(0), volumeCB(0), stride(0), geometry(0), phaseOffset(0) {}
 
         FloatNOrder(const GaugeField &u, Float *gauge_ = 0, Float **ghost_ = 0) :
           reconstruct(u),
@@ -1618,7 +1618,7 @@ namespace quda {
         void init(const GaugeField &u, Float *gauge_=0, Float **ghost_=0, bool override=false)
         {
           reconstruct = Reconstruct<reconLenParam, Float, ghostExchange_, stag_phase>(u);
-          gauge = gauge_ ? gauge_ : (Float*)u.Gauge_p();
+          gauge = gauge_; 
           offset = u.Bytes() / (2 * sizeof(Float) * N);
           ghostExchange = u.GhostExchange();
           volumeCB = u.VolumeCB();

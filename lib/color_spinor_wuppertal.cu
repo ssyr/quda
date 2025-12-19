@@ -7,6 +7,7 @@
 #include <color_spinor_field.h>
 #include <color_spinor_field_order.h>
 #include <tune_quda.h>
+#include <device.h>
 #include <mpi.h>
 
 namespace quda {
@@ -28,7 +29,8 @@ namespace quda {
     const int commDim[4]; // whether a given dimension is partitioned or not
     const int volumeCB;   // checkerboarded volume
 
-  WuppertalSmearingArg(ColorSpinorField &out, const ColorSpinorField &in, int parity, const GaugeField &U, const Float *aW, const Float bW)
+  WuppertalSmearingArg(ColorSpinorField &out, const ColorSpinorField &in, int parity, const GaugeField &U, 
+          const Float *aW, const Float bW)
   : out(out), in(in), U(U), aW{aW[0],aW[1],aW[2],aW[3]}, bW(bW), parity(parity), nParity(in.SiteSubset()), nFace(1),
       dim{ (3-nParity) * in.X(0), in.X(1), in.X(2), in.X(3), 1 },
       commDim{comm_dim_partitioned(0), comm_dim_partitioned(1), comm_dim_partitioned(2), comm_dim_partitioned(3)},
@@ -152,7 +154,7 @@ namespace quda {
   }
 
   template <typename Float, int Ns, int Nc, typename Arg>
-  class WuppertalSmearing : public TunableVectorY {
+  class WuppertalSmearing : public Tunable {
 
   protected:
     Arg &arg;
@@ -170,24 +172,26 @@ namespace quda {
     unsigned int minThreads() const { return arg.volumeCB; }
 
   public:
-    WuppertalSmearing(Arg &arg, const ColorSpinorField &meta) : TunableVectorY(arg.nParity), arg(arg), meta(meta)
+    WuppertalSmearing(Arg &arg, const ColorSpinorField &meta) 
+    : arg(arg), meta(meta)
     {
-      strcpy(aux, meta.AuxString());
-      strcat(aux, comm_dim_partitioned_string());
+      strncpy(aux, meta.AuxString().c_str(), sizeof(aux));
+      strncat(aux, comm_dim_partitioned_string(), sizeof(aux));
     }
     virtual ~WuppertalSmearing() { }
 
-    void apply(const cudaStream_t &stream) {
+    virtual void apply(const qudaStream_t &) override
+    {
       if (meta.Location() == QUDA_CPU_FIELD_LOCATION) {
         wuppertalStepCPU<Float,Ns,Nc>(arg);
       } else {
         TuneParam tp = tuneLaunch(*this, getTuning(), getVerbosity());
 
-        wuppertalStepGPU<Float,Ns,Nc> <<<tp.grid,tp.block,tp.shared_bytes,stream>>>(arg);
+        wuppertalStepGPU<Float,Ns,Nc> <<<tp.grid, tp.block, tp.shared_bytes>>>(arg);
       }
     }
 
-    TuneKey tuneKey() const { return TuneKey(meta.VolString(), typeid(*this).name(), aux); }
+    TuneKey tuneKey() const { return TuneKey(meta.VolString().c_str(), typeid(*this).name(), aux); }
   };
 
   template<typename Float, int Ns, int Nc, QudaReconstructType gRecon>
@@ -196,7 +200,7 @@ namespace quda {
   {
     WuppertalSmearingArg<Float,Ns,Nc,gRecon> arg(out, in, parity, U, (Float*) aW, (Float) bW);
     WuppertalSmearing<Float,Ns,Nc,WuppertalSmearingArg<Float,Ns,Nc,gRecon> > wuppertal(arg, in);
-    wuppertal.apply(0);
+    wuppertal.apply(device::get_default_stream());
   }
 
   // template on the gauge reconstruction
@@ -265,7 +269,7 @@ namespace quda {
   void wuppertalStep(ColorSpinorField &out, const ColorSpinorField &in, int parity,
 		     const GaugeField& U, const double *aW, const double bW)
   {
-    if (in.V() == out.V()) {
+    if (in.data() == out.data()) {
       errorQuda("Orign and destination fields must be different pointers");
     }
 
